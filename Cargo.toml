@@ -9,7 +9,7 @@ repository = "https://github.com/alexhholmes/flint"
 keywords = ["flint", "flintdb", "sqlite", "sql", "database"]
 categories = ["database"]
 readme = "README.md"
-
+exclude = [".gitignore"]
 
 [features]
 sqlx = ["dep:sqlx"]
