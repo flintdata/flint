@@ -13,7 +13,7 @@ exclude = [".gitignore"]
 
 [[bin]]
 name = "flint"
-path = "src/bin/flint.rs"
+path = "bin/flint.rs"
 
 [dependencies]
 libc = "0.2"
