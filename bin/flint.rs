@@ -1,4 +1,5 @@
-use flintdb::{Config, Server};
+use flintdb::config::Config;
+use flintdb::server::Server;
 
 #[tokio::main]
 pub async fn main() {
