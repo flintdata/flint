@@ -30,6 +30,11 @@ Indexing follows the MySQL primary-key indirection approach instead of updating
 every index for every tuple update. At the *slight* cost of read latency, we
 can maintain our higher write throughput we gained through the LSH architecture.
 
+### MVCC
+
+Similarly to Postgres, Flint performs tuple level MVCC. All tuples are immutable
+once written, until they are automatically vacuumed.
+
 ### Compression
 
 Flint (will) implements LZ4 and Zstd compression at the 64KB block level. Blocks
