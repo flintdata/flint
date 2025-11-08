@@ -92,6 +92,32 @@ capacity needs of the primary + secondary logical database. Thus, you have two
 logical databases within the same control plane with different HA, read replica,
 and capacity constraints.
 
+Example:
+```
+You don't buy hardware then figure out where databases go. You decide:
+
+db_users: 10TB, RF=3
+db_analytics: 5TB, RF=1
+db_events: 2TB, RF=2
+
+Then compute required nodes:
+
+db_users needs 3 nodes of at least 10TB each
+db_analytics needs 1 node of at least 5TB
+db_events needs 2 nodes of at least 2TB
+
+Overlap these assignments:
+
+Node 1: 10TB (db_users primary) + 2TB (db_events primary) = 12TB minimum
+Node 2: 10TB (db_users replica) + 2TB (db_events replica) = 12TB minimum
+Node 3: 10TB (db_users replica) = 10TB minimum
+Node 4: 5TB (db_analytics) = 5TB minimum
+```
+
+This requires upfront planning, but has the benefit of deterministic hardware
+procurement. Any future "scaling" is vertical scaling of nodes following this
+calculation.
+
 ## Source Layout
 ```
   Server
