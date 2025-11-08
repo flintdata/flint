@@ -147,3 +147,6 @@ calculation.
 ## Todo
 - [ ] Support for variable length primary and secondary keys on indexes, currently
   flint currently only supports fixed-length values.
+- [ ] Proper serialization of segments/blocks
+- [ ] Hash indexes
+- [ ] MVCC for indexes (once UPDATE and DELETE are implemented)
