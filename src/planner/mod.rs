@@ -119,8 +119,39 @@ fn plan_select(query: &sqlparser::ast::Query) -> Result<Operator, ExecutorError>
             };
         }
 
-        // TODO: Add LIMIT support once sqlparser API is clarified
-        // if let Some(limit_clause) = &query.limit_clause { ... }
+        // Add LIMIT if present
+        if let Some(limit_clause) = &query.limit_clause {
+            if let sqlparser::ast::LimitClause::LimitOffset { limit: Some(limit_expr), offset, .. } = limit_clause {
+                // Extract limit value from expression
+                if let sqlparser::ast::Expr::Value(val) = limit_expr {
+                    if let sqlparser::ast::Value::Number(num_str, _) = &val.value {
+                        if let Ok(limit_val) = num_str.parse::<u64>() {
+                            let offset_val = if let Some(off) = offset {
+                                match off {
+                                    sqlparser::ast::Offset { value: sqlparser::ast::Expr::Value(v), .. } => {
+                                        if let sqlparser::ast::Value::Number(off_str, _) = &v.value {
+                                            off_str.parse::<u64>().ok()
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None
+                                }
+                            } else {
+                                None
+                            };
+
+                            debug!(limit = limit_val, offset = ?offset_val, "plan: adding limit");
+                            plan = Operator::Limit {
+                                input: Box::new(plan),
+                                limit: limit_val,
+                                offset: offset_val,
+                            };
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(plan)
     } else {

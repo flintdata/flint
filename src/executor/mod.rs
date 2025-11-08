@@ -225,10 +225,14 @@ impl Executor {
                 // TODO: Implement aggregation
                 Ok(Vec::new())
             }
-            Operator::Limit { input, limit, offset: _ } => {
-                debug!("executing limit {}", limit);
+            Operator::Limit { input, limit, offset } => {
+                debug!("executing limit {} offset {:?}", limit, offset);
                 let rows = self.execute_plan_rows(*input, table_name)?;
-                Ok(rows.into_iter().take(limit as usize).collect())
+                let skip = offset.unwrap_or(0) as usize;
+                Ok(rows.into_iter()
+                    .skip(skip)
+                    .take(limit as usize)
+                    .collect())
             }
         }
     }
