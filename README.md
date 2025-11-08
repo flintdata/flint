@@ -61,7 +61,7 @@ This follows the common practice (used by Postgres) of streaming WAL changes to
 read replicas. This requires zero HA infrastructure and is the default solution
 for multi-instance deployments.
 
-### Failover and HA (future improvements)
+#### Failover and HA
 
 Optionally, failover with a lease-based, single writer deployment is available.
 With a single writer, Flint maintains the low-latency writes of the single-writer
@@ -79,6 +79,18 @@ want the option for simple to manage HA and read replication to meet read
 throughput demands. You get fast writes, HA, read scaling, and operational sanity
 at the cost of geographically dispersed local writes and storage scaling for
 single deployments.
+
+#### Heterogeneous Deployments (Advanced)
+
+Each logical database can be configured to a different replica failover (RF)
+count. For a 5 node deployment, you can have your primary database as an RF of 5.
+So that it has 4 read replicas and failover nodes at any given time. Another
+logical database may not have the same read or failover requirements (RF 1), but 
+it may require greater storage scaling. You can deploy 5 nodes, 4 of which meet 
+the storage capacity needs of the primary database, and 1 that meets the storage
+capacity needs of the primary + secondary logical database. Thus, you have two
+logical databases within the same control plane with different HA, read replica,
+and capacity constraints.
 
 ## Source Layout
 ```
