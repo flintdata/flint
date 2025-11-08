@@ -17,7 +17,7 @@ impl Server {
     }
 
     pub async fn start(&self) {
-        let factory = Arc::new(HandlerFactory::new());
+        let factory = Arc::new(HandlerFactory::new(&self.config));
 
         let server_addr = format!("{}:{}", self.config.bind_addr, self.config.port);
         let listener = TcpListener::bind(&server_addr).await.unwrap();

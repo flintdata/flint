@@ -8,6 +8,7 @@ use pgwire::api::Type;
 use sqlparser::ast::Statement;
 use tracing::{debug, info};
 
+use crate::config::Config;
 use crate::executor::error::ExecutorError;
 use crate::planner::{self, Operator};
 use crate::parser;
@@ -21,9 +22,9 @@ pub(crate) struct Executor {
 }
 
 impl Executor {
-    pub fn new() -> Self {
+    pub fn new(config: &Config) -> Self {
         Executor {
-            db: Arc::new(parking_lot::RwLock::new(Database::new()))
+            db: Arc::new(parking_lot::RwLock::new(Database::new(config)))
         }
     }
 
@@ -321,6 +322,7 @@ fn rows_to_response(rows: Vec<Row>, schema: Option<Schema>) -> Result<Response> 
                 crate::types::DataType::String => Type::VARCHAR,
                 crate::types::DataType::Bool => Type::BOOL,
                 crate::types::DataType::Null => Type::UNKNOWN,
+                crate::types::DataType::Extension { .. } => Type::UNKNOWN,
             };
             field_infos.push(FieldInfo::new(
                 col.name.clone().into(),
@@ -369,6 +371,13 @@ fn rows_to_response(rows: Vec<Row>, schema: Option<Schema>) -> Result<Response> 
                         .map_err(|e| ExecutorError::Execution(format!("Encoding error: {:?}", e)))?;
                 }
                 Value::Null => {
+                    encoder.encode_field(&None::<i32>)
+                        .map_err(|e| ExecutorError::Execution(format!("Encoding error: {:?}", e)))?;
+                }
+                Value::Extension { type_oid, .. } => {
+                    // Extension values cannot be directly serialized to pgwire
+                    // They require the TypeExtension trait for proper encoding
+                    debug!("skipping extension value (type_oid: {})", type_oid);
                     encoder.encode_field(&None::<i32>)
                         .map_err(|e| ExecutorError::Execution(format!("Encoding error: {:?}", e)))?;
                 }

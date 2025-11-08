@@ -1,0 +1,12 @@
+[package]
+name = "point-ext"
+version = "0.1.0"
+edition = "2024"
+authors = ["Alex Holmes <alex@sed.dev>"]
+license = "MIT OR Apache-2.0"
+description = "Point type extension for Flint"
+
+[dependencies]
+flintdb = { path = "../..", features = ["extensions"] }
+pgwire = "0.35.0"
+inventory = "0.3"

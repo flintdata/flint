@@ -28,3 +28,8 @@ ulid = "1.1"
 parking_lot = "0.12"
 serde = { version = "1.0.228", features = ["derive"] }
 bincode = "2.0"
+inventory = { version = "0.3", optional = true }
+
+[features]
+default = ["extensions"]
+extensions = ["inventory"]  # Core extension system with auto-discovery via inventory crate

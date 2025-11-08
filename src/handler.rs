@@ -13,13 +13,15 @@ use ulid::Ulid;
 
 use crate::executor::Executor;
 
+use crate::config::Config;
+
 pub(crate) struct HandlerFactory {
     handler: Arc<Handler>
 }
 
 impl HandlerFactory {
-    pub fn new() -> Self {
-        let executor = Arc::new(Executor::new());
+    pub fn new(config: &Config) -> Self {
+        let executor = Arc::new(Executor::new(config));
         HandlerFactory {
             handler: Arc::new(Handler { executor })
         }

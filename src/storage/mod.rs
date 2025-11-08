@@ -3,13 +3,20 @@ mod base;
 mod internal;
 pub mod index;
 
+// Re-export for extension types
+pub use self::base::TuplePointer;
+
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
 use parking_lot::Mutex;
-use crate::types::{Row, Schema};
-use self::internal::DatabaseFile;
-use self::base::{SegmentId, TuplePointer};
+use serde::{Serialize, Deserialize};
 use bincode::{Encode, Decode};
+use crate::types::{Row, Schema};
+use crate::config::Config;
+#[cfg(feature = "extensions")]
+use crate::extensions::registry::{TypeRegistry, OperatorRegistry, FunctionRegistry, IndexBuilderRegistry};
+use self::internal::DatabaseFile;
+use self::base::SegmentId;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -21,7 +28,7 @@ fn compute_checksum(data: &[u8]) -> u64 {
 }
 
 /// Catalog header for metadata persistence
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct CatalogHeader {
     pub catalog_version: u32,
     pub num_tables: u32,
@@ -68,7 +75,7 @@ impl MetadataManager {
 }
 
 /// Table metadata
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct TableMetadata {
     pub schema: Schema,
     pub segments: Vec<SegmentId>,
@@ -87,13 +94,61 @@ pub struct Database {
     /// Per-table latches for serializing index modifications
     /// TODO implement per-page latching for proper implementation
     index_latches: HashMap<String, Arc<Mutex<()>>>,
+    /// Extension registries for types, operators, functions, indexes
+    #[cfg(feature = "extensions")]
+    pub type_registry: Arc<TypeRegistry>,
+    #[cfg(feature = "extensions")]
+    pub operator_registry: Arc<OperatorRegistry>,
+    #[cfg(feature = "extensions")]
+    pub function_registry: Arc<FunctionRegistry>,
+    #[cfg(feature = "extensions")]
+    pub index_builder_registry: Arc<IndexBuilderRegistry>,
 }
 
 impl Database {
-    pub fn new() -> Self {
+    pub fn new(config: &Config) -> Self {
         let file = DatabaseFile::open("data.db")
             .expect("Failed to open database file");
 
+        #[cfg(feature = "extensions")]
+        let mut db = {
+            // Initialize registries with built-in types
+            let mut type_registry = TypeRegistry::new();
+            crate::extensions::builtin::register_builtin_types(&mut type_registry);
+
+            let mut operator_registry = OperatorRegistry::new();
+            let mut function_registry = FunctionRegistry::new();
+            let index_builder_registry = IndexBuilderRegistry::new();
+
+            // Load extensions based on config
+            let enabled_extensions = if config.load_all_extensions {
+                None // None means load all extensions
+            } else {
+                Some(config.enabled_extensions.as_slice()) // Load only specified extensions
+            };
+
+            // Load all registered extensions (auto-discovered via inventory)
+            crate::extensions::loader::load_all_extensions(
+                &mut type_registry,
+                &mut operator_registry,
+                &mut function_registry,
+                enabled_extensions,
+            );
+
+            Database {
+                file,
+                tables: HashMap::new(),
+                next_segment_id: Mutex::new(2), // segments 0,1 reserved for metadata
+                metadata_mgr: MetadataManager::new(),
+                index_latches: HashMap::new(),
+                type_registry: Arc::new(type_registry),
+                operator_registry: Arc::new(operator_registry),
+                function_registry: Arc::new(function_registry),
+                index_builder_registry: Arc::new(index_builder_registry),
+            }
+        };
+
+        #[cfg(not(feature = "extensions"))]
         let mut db = Database {
             file,
             tables: HashMap::new(),
