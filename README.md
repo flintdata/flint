@@ -4,7 +4,7 @@ A *lighter* SQL database
 
 ## Use case
 
-Use Flint if you need: low-latency writes of a single-writer database,
+Use Flint if you need: low-latency writes of a single-writer SQL database,
 high-availability, and read replication.
 
 Use something like Cassandra or ScyllaDB if you need maximum write *throughput*
