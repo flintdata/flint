@@ -1,5 +1,5 @@
-use bincode::{Encode, Decode};
-use serde::{Serialize, Deserialize};
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
 /// Block size for I/O operations (64KB)
 pub const BLOCK_SIZE: usize = 64 * 1024;
@@ -258,3 +258,29 @@ impl Block {
     }
 }
 
+/// Page identifier for index pages (4KB)
+/// Encoded as (segment_id << 16 | page_offset_in_segment)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PageId(u32);
+
+impl PageId {
+    /// Create a PageId from segment_id and page offset
+    pub fn new(segment_id: u16, page_offset: u16) -> Self {
+        PageId((segment_id as u32) << 16 | page_offset as u32)
+    }
+
+    /// Extract segment_id from PageId
+    pub fn segment_id(&self) -> u16 {
+        (self.0 >> 16) as u16
+    }
+
+    /// Extract page offset from PageId
+    pub fn page_offset(&self) -> u16 {
+        (self.0 & 0xFFFF) as u16
+    }
+
+    /// Get the raw u32 value
+    pub fn raw(&self) -> u32 {
+        self.0
+    }
+}

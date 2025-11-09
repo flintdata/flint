@@ -1,5 +1,7 @@
 use std::io::{self, Result as IoResult};
 use crate::storage::base::TuplePointer;
+use crate::storage::files::IndexFile;
+use crate::storage::base::PageId;
 use super::page::{IndexEntry, IndexPage, IndexPageHeader};
 
 /// Represents a split result when a node overflows
@@ -11,11 +13,24 @@ pub struct SplitResult {
     pub right_page: IndexPage,
 }
 
-/// B+ Tree node operations
-/// Handles insertion with automatic splitting and rebalancing
-pub struct BTree;
+/// B+ Tree with root page tracking
+/// Stores root page ID and loads/saves pages via IndexDiskManager
+#[derive(Debug, Clone)]
+pub struct BTree {
+    root_page_id: Option<PageId>,
+}
 
 impl BTree {
+    /// Create a new BTree with optional root page ID
+    pub fn new(root_page_id: Option<PageId>) -> Self {
+        BTree { root_page_id }
+    }
+
+    /// Get the root page ID (if exists)
+    pub fn root_page_id(&self) -> Option<PageId> {
+        self.root_page_id
+    }
+
     /// Insert a key-value pair into a page, handling splits if necessary
     /// Returns None if no split occurred, Some(SplitResult) if the page split
     pub fn insert_into_page(
@@ -28,8 +43,8 @@ impl BTree {
         // If key already exists, update it (replace old value)
         if found {
             let entry = IndexEntry::new(key, tuple_ptr);
-            let header_size = size_of::<IndexPageHeader>();
-            let entry_size = size_of::<IndexEntry>();
+            let header_size = std::mem::size_of::<IndexPageHeader>();
+            let entry_size = std::mem::size_of::<IndexEntry>();
             let offset = header_size + pos * entry_size;
 
             let entry_bytes = unsafe {
@@ -132,80 +147,108 @@ impl BTree {
     }
 }
 
-/// Simple in-memory B+ tree for single-threaded operations
-/// For multi-threaded scenarios, wrap with Arc<RwLock<>>
-pub struct InMemoryBTree {
-    root: Option<Box<IndexPage>>,
+impl super::Index for BTree {
+    fn index_type(&self) -> &str {
+        "btree"
+    }
+
+    fn insert(
+        &mut self,
+        key: u64,
+        pointer: TuplePointer,
+        disk_mgr: &IndexFile,
+    ) -> IoResult<Option<super::IndexSplit>> {
+        // Read root page
+        let root_id = self.root_page_id.unwrap();
+        let page_data = disk_mgr.read_page(root_id)?;
+        let mut root_page = super::page::IndexPage { data: page_data };
+
+        // Insert into root
+        match Self::insert_into_page(&mut root_page, key, pointer)? {
+            None => {
+                // No split, just write back
+                disk_mgr.write_page(root_id, &root_page.data)?;
+                Ok(None)
+            }
+            Some(split) => {
+                // Root split - create new root
+                // Write left page (current root becomes left child)
+                disk_mgr.write_page(root_id, &root_page.data)?;
+
+                // Allocate right sibling
+                let right_id = disk_mgr.allocate_page()?;
+                disk_mgr.write_page(right_id, &split.right_page.data)?;
+
+                // For now, signal split to caller
+                // Full B+ tree would create new parent here
+                Ok(Some(super::IndexSplit {
+                    promoted_key: split.promoted_key,
+                    right_sibling_data: split.right_page.data.to_vec(),
+                }))
+            }
+        }
+    }
+
+    fn search(
+        &self,
+        key: u64,
+        disk_mgr: &IndexFile,
+    ) -> IoResult<Option<TuplePointer>> {
+        let root_id = match self.root_page_id {
+            None => return Ok(None),
+            Some(id) => id,
+        };
+
+        let page_data = disk_mgr.read_page(root_id)?;
+        let root_page = super::page::IndexPage { data: page_data };
+
+        // For now, only handle single-level tree (root is leaf)
+        if root_page.header()?.is_leaf {
+            Self::search_page(&root_page, key)
+        } else {
+            // TODO: traverse internal nodes
+            Ok(None)
+        }
+    }
 }
 
-impl InMemoryBTree {
-    pub fn new() -> Self {
-        InMemoryBTree { root: None }
-    }
+impl super::OrderedIndex for BTree {
+    fn range_scan(
+        &self,
+        start_key: u64,
+        end_key: u64,
+        disk_mgr: &IndexFile,
+    ) -> IoResult<Vec<(u64, TuplePointer)>> {
+        let root_id = match self.root_page_id {
+            None => return Ok(Vec::new()),
+            Some(id) => id,
+        };
 
-    /// Insert a key-value pair
-    /// This is a simplified single-level implementation
-    pub fn insert(&mut self, key: u64, tuple_ptr: TuplePointer) -> IoResult<()> {
-        match &mut self.root {
-            None => {
-                // Create root page
-                let mut root = IndexPage::new(true);
-                let entry = IndexEntry::new(key, tuple_ptr);
-                root.insert_at(0, entry)?;
-                self.root = Some(Box::new(root));
-                Ok(())
-            }
-            Some(root) => {
-                // Try to insert into root
-                match BTree::insert_into_page(root, key, tuple_ptr)? {
-                    None => Ok(()),
-                    Some(split) => {
-                        // Root split - create new root
-                        let mut new_root = IndexPage::new(false); // Internal node
+        let page_data = disk_mgr.read_page(root_id)?;
+        let root_page = super::page::IndexPage { data: page_data };
 
-                        // Add entries from left child (root) and right child to new root
-                        let _left_entries = root.entries()?;
-
-                        // New root has: split.promoted_key pointing to left and right children
-                        // For simplicity, just store promoted key
-                        let promoted_entry = IndexEntry::new(split.promoted_key, TuplePointer::new(0, 0, 0));
-                        new_root.insert_at(0, promoted_entry)?;
-
-                        // In a full implementation, we'd also store child pointers
-                        // For now, this is a simplified version
-                        self.root = Some(Box::new(new_root));
-                        Ok(())
-                    }
-                }
-            }
+        if root_page.header()?.is_leaf {
+            Self::range_scan_page(&root_page, start_key, end_key)
+        } else {
+            // TODO: traverse internal nodes
+            Ok(Vec::new())
         }
     }
 
-    /// Look up a key
-    pub fn search(&self, key: u64) -> IoResult<Option<TuplePointer>> {
-        match &self.root {
-            None => Ok(None),
-            Some(page) => {
-                // For now, only handle single-level tree (leaf root)
-                if page.header()?.is_leaf {
-                    BTree::search_page(page, key)
-                } else {
-                    // In full implementation, would traverse tree
-                    Ok(None)
-                }
-            }
-        }
-    }
+    fn full_scan(&self, disk_mgr: &IndexFile) -> IoResult<Vec<(u64, TuplePointer)>> {
+        let root_id = match self.root_page_id {
+            None => return Ok(Vec::new()),
+            Some(id) => id,
+        };
 
-    /// Get root page for persistence
-    pub fn root_page(&self) -> Option<&IndexPage> {
-        self.root.as_ref().map(|b| b.as_ref())
-    }
+        let page_data = disk_mgr.read_page(root_id)?;
+        let root_page = super::page::IndexPage { data: page_data };
 
-    /// Load tree from a persisted page
-    pub fn load(page: IndexPage) -> Self {
-        InMemoryBTree {
-            root: Some(Box::new(page)),
+        if root_page.header()?.is_leaf {
+            Self::scan_page(&root_page)
+        } else {
+            // TODO: traverse internal nodes
+            Ok(Vec::new())
         }
     }
 }
@@ -215,36 +258,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_insert_and_search() -> IoResult<()> {
-        let mut tree = InMemoryBTree::new();
-        let ptr = TuplePointer::new(0, 5, 10);
-
-        tree.insert(42, ptr)?;
-
-        let found = tree.search(42)?;
-        assert_eq!(found, Some(ptr));
-
-        let not_found = tree.search(99)?;
-        assert_eq!(not_found, None);
-
-        Ok(())
+    fn test_btree_creation_empty() {
+        let btree = BTree::new(None);
+        assert_eq!(btree.root_page_id(), None);
     }
 
     #[test]
-    fn test_split_on_overflow() -> IoResult<()> {
-        let mut tree = InMemoryBTree::new();
-        let ptr1 = TuplePointer::new(0, 0, 1);
-        let ptr2 = TuplePointer::new(0, 0, 2);
-
-        tree.insert(10, ptr1)?;
-        tree.insert(20, ptr2)?;
-
-        let found = tree.search(10)?;
-        assert_eq!(found, Some(ptr1));
-
-        let found = tree.search(20)?;
-        assert_eq!(found, Some(ptr2));
-
-        Ok(())
+    fn test_btree_creation_with_root() {
+        let page_id = PageId::new(0, 0);
+        let btree = BTree::new(Some(page_id));
+        assert_eq!(btree.root_page_id(), Some(page_id));
     }
 }
