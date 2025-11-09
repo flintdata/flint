@@ -15,7 +15,7 @@ impl TestDb {
     pub fn new() -> Self {
         // Kill any stray flint processes first
         let _ = Command::new("pkill")
-            .args(&["-9", "-f", "target/release/flint"])
+            .args(&["-9", "-f", "target/debug/flint"])
             .output();
 
         // Give processes time to die
@@ -46,7 +46,7 @@ impl TestDb {
     fn spawn_server(dir: &PathBuf) -> Child {
         let binary_path = std::env::current_dir()
             .expect("failed to get current dir")
-            .join("target/release/flint");
+            .join("target/debug/flint");
 
         let child = Command::new(&binary_path)
             .current_dir(dir)
@@ -137,7 +137,7 @@ impl Drop for TestDb {
 
         // Kill any remaining flint processes that might be lingering
         let _ = Command::new("pkill")
-            .args(&["-9", "-f", "target/release/flint"])
+            .args(&["-9", "-f", "target/debug/flint"])
             .output();
 
         thread::sleep(Duration::from_millis(200));

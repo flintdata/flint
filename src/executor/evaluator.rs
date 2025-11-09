@@ -13,9 +13,14 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<Value> {
         Expr::Value(val) => {
             match &val.value {
                 sqlparser::ast::Value::Number(n, _) => {
-                    n.parse::<i64>()
-                        .map(Value::Int)
-                        .map_err(|_| ExecutorError::Execution(format!("Invalid number: {}", n)))
+                    // Try parsing as i64 first, then f64
+                    if let Ok(i) = n.parse::<i64>() {
+                        Ok(Value::Int(i))
+                    } else if let Ok(f) = n.parse::<f64>() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Err(ExecutorError::Execution(format!("Invalid number: {}", n)))
+                    }
                 }
                 sqlparser::ast::Value::SingleQuotedString(s) => Ok(Value::String(s.clone())),
                 sqlparser::ast::Value::Boolean(b) => Ok(Value::Bool(*b)),
@@ -73,6 +78,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         Eq => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a == b,
+                (Value::Float(a), Value::Float(b)) => a == b,
+                (Value::Int(a), Value::Float(b)) => *a as f64 == *b,
+                (Value::Float(a), Value::Int(b)) => *a == *b as f64,
                 (Value::String(a), Value::String(b)) => a == b,
                 (Value::Bool(a), Value::Bool(b)) => a == b,
                 (Value::Null, _) | (_, Value::Null) => false, // NULL comparisons are false
@@ -86,6 +94,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         NotEq => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a != b,
+                (Value::Float(a), Value::Float(b)) => a != b,
+                (Value::Int(a), Value::Float(b)) => *a as f64 != *b,
+                (Value::Float(a), Value::Int(b)) => *a != *b as f64,
                 (Value::String(a), Value::String(b)) => a != b,
                 (Value::Bool(a), Value::Bool(b)) => a != b,
                 (Value::Null, _) | (_, Value::Null) => false,
@@ -99,6 +110,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         Gt => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a > b,
+                (Value::Float(a), Value::Float(b)) => a > b,
+                (Value::Int(a), Value::Float(b)) => *a as f64 > *b,
+                (Value::Float(a), Value::Int(b)) => *a > *b as f64,
                 (Value::String(a), Value::String(b)) => a > b,
                 (Value::Null, _) | (_, Value::Null) => false,
                 _ => return Err(ExecutorError::Execution(
@@ -111,6 +125,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         Lt => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a < b,
+                (Value::Float(a), Value::Float(b)) => a < b,
+                (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
+                (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
                 (Value::String(a), Value::String(b)) => a < b,
                 (Value::Null, _) | (_, Value::Null) => false,
                 _ => return Err(ExecutorError::Execution(
@@ -123,6 +140,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         GtEq => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a >= b,
+                (Value::Float(a), Value::Float(b)) => a >= b,
+                (Value::Int(a), Value::Float(b)) => *a as f64 >= *b,
+                (Value::Float(a), Value::Int(b)) => *a >= *b as f64,
                 (Value::String(a), Value::String(b)) => a >= b,
                 (Value::Null, _) | (_, Value::Null) => false,
                 _ => return Err(ExecutorError::Execution(
@@ -135,6 +155,9 @@ fn eval_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Va
         LtEq => {
             let result = match (left, right) {
                 (Value::Int(a), Value::Int(b)) => a <= b,
+                (Value::Float(a), Value::Float(b)) => a <= b,
+                (Value::Int(a), Value::Float(b)) => (*a as f64) <= *b,
+                (Value::Float(a), Value::Int(b)) => *a <= (*b as f64),
                 (Value::String(a), Value::String(b)) => a <= b,
                 (Value::Null, _) | (_, Value::Null) => false,
                 _ => return Err(ExecutorError::Execution(
