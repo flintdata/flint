@@ -150,3 +150,5 @@ calculation.
 - [ ] Proper serialization of segments/blocks
 - [ ] Hash indexes
 - [ ] MVCC for indexes (once UPDATE and DELETE are implemented)
+- [ ] Support splitting files into multi-file chunks for user fs backup convenience
+- [ ] Reverse index scans

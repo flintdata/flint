@@ -1,4 +1,4 @@
-use sqlparser::ast::{Statement, CreateTable, Insert};
+use sqlparser::ast::{Statement, CreateTable, Insert, CreateIndex};
 use tracing::debug;
 
 use crate::executor::error::ExecutorError;
@@ -200,7 +200,7 @@ fn extract_table_name(table_with_joins: &sqlparser::ast::TableWithJoins) -> Resu
     }
 }
 
-pub fn extract_create_table(stmt: &CreateTable) -> Result<(String, Schema), ExecutorError> {
+pub fn extract_create_table(stmt: &CreateTable) -> Result<(String, Schema, String), ExecutorError> {
     debug!("extracting create table");
 
     // Extract table name
@@ -235,7 +235,51 @@ pub fn extract_create_table(stmt: &CreateTable) -> Result<(String, Schema), Exec
         ));
     }
 
-    Ok((table_name, Schema::new(columns)))
+    // Extract PRIMARY KEY constraint
+    let mut primary_key_col = None;
+    for constraint in &stmt.constraints {
+        use sqlparser::ast::TableConstraint;
+        if let TableConstraint::PrimaryKey { columns: pk_cols, .. } = constraint {
+            if pk_cols.is_empty() {
+                return Err(ExecutorError::Execution(
+                    "PRIMARY KEY constraint requires at least one column".to_string(),
+                ));
+            }
+            if pk_cols.len() > 1 {
+                return Err(ExecutorError::UnsupportedStatement(
+                    "Composite primary keys not yet supported".to_string(),
+                ));
+            }
+
+            // Extract column name from first PK column (IndexColumn)
+            let pk_col_name = match &pk_cols[0].column.expr {
+                sqlparser::ast::Expr::Identifier(ident) => ident.value.clone(),
+                _ => return Err(ExecutorError::Execution(
+                    "PRIMARY KEY column must be an identifier".to_string(),
+                )),
+            };
+
+            // Mark the column as primary key
+            if let Some(col) = columns.iter_mut().find(|c| c.name == pk_col_name) {
+                col.is_primary_key = true;
+                primary_key_col = Some(pk_col_name);
+            } else {
+                return Err(ExecutorError::Execution(
+                    format!("PRIMARY KEY column '{}' not found in table definition", pk_col_name),
+                ));
+            }
+        }
+    }
+
+    let primary_key_col = primary_key_col.ok_or_else(|| {
+        ExecutorError::Execution(
+            "CREATE TABLE requires a PRIMARY KEY constraint (like Postgres)".to_string(),
+        )
+    })?;
+
+    debug!(table = %table_name, primary_key = %primary_key_col, "extracted create table");
+
+    Ok((table_name, Schema::new(columns), primary_key_col))
 }
 
 pub fn extract_insert(stmt: &Insert) -> Result<(String, Vec<Vec<sqlparser::ast::Expr>>), ExecutorError> {
@@ -288,6 +332,81 @@ pub fn extract_insert(stmt: &Insert) -> Result<(String, Vec<Vec<sqlparser::ast::
     }
 
     Ok((table_name, rows))
+}
+
+pub fn extract_create_index(stmt: &CreateIndex) -> Result<(String, String, String), ExecutorError> {
+    debug!("extracting create index");
+
+    // Extract index name (required)
+    let index_name = match &stmt.name {
+        Some(name) => {
+            name.0.iter()
+                .filter_map(|part| part.as_ident())
+                .map(|ident| ident.value.clone())
+                .collect::<Vec<_>>()
+                .join(".")
+        }
+        None => return Err(ExecutorError::Execution("CREATE INDEX requires an index name".to_string())),
+    };
+
+    if index_name.is_empty() {
+        return Err(ExecutorError::Execution("Index name is empty".to_string()));
+    }
+
+    // Extract table name
+    let table_name = stmt.table_name.0.iter()
+        .filter_map(|part| part.as_ident())
+        .map(|ident| ident.value.clone())
+        .collect::<Vec<_>>()
+        .join(".");
+
+    if table_name.is_empty() {
+        return Err(ExecutorError::Execution("Table name is empty".to_string()));
+    }
+
+    debug!(index = %index_name, table = %table_name, "extracting index columns");
+
+    // Extract column name (only support single column for now)
+    if stmt.columns.is_empty() {
+        return Err(ExecutorError::Execution(
+            "CREATE INDEX requires at least one column".to_string(),
+        ));
+    }
+
+    if stmt.columns.len() > 1 {
+        return Err(ExecutorError::UnsupportedStatement(
+            "Multi-column indexes not yet supported".to_string(),
+        ));
+    }
+
+    // IndexColumn has a `column` field which is an OrderByExpr
+    let column_name = match &stmt.columns[0].column.expr {
+        sqlparser::ast::Expr::Identifier(ident) => ident.value.clone(),
+        _ => return Err(ExecutorError::Execution(
+            "Index column must be an identifier".to_string(),
+        )),
+    };
+
+    // Extract index type from USING clause (defaults to "btree")
+    let index_type = if let Some(using) = &stmt.using {
+        // using is an IndexType enum
+        match using {
+            sqlparser::ast::IndexType::BTree => "btree".to_string(),
+            sqlparser::ast::IndexType::Hash => "hash".to_string(),
+            sqlparser::ast::IndexType::GIN => "gin".to_string(),
+            sqlparser::ast::IndexType::GiST => "gist".to_string(),
+            sqlparser::ast::IndexType::SPGiST => "spgist".to_string(),
+            sqlparser::ast::IndexType::BRIN => "brin".to_string(),
+            sqlparser::ast::IndexType::Bloom => "bloom".to_string(),
+            sqlparser::ast::IndexType::Custom(ident) => ident.value.to_lowercase(),
+        }
+    } else {
+        "btree".to_string()
+    };
+
+    debug!(index = %index_name, table = %table_name, column = %column_name, index_type = %index_type, "extracted create index");
+
+    Ok((table_name, column_name, index_type))
 }
 
 fn sql_type_to_data_type(data_type: &sqlparser::ast::DataType) -> Result<DataType, ExecutorError> {

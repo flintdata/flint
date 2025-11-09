@@ -1,5 +1,5 @@
 mod io;
-mod base;
+pub mod base;
 mod internal;
 pub mod index;
 pub mod files;
@@ -13,14 +13,16 @@ pub use base::PageId;
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
 use std::path::PathBuf;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::{Serialize, Deserialize};
 use bincode::{Encode, Decode};
+use tracing::debug;
 use crate::types::{Row, Schema};
 use crate::config::Config;
 #[cfg(feature = "extensions")]
-use crate::extensions::registry::{TypeRegistry, OperatorRegistry, FunctionRegistry, IndexBuilderRegistry};
-use self::files::TableFile;
+use crate::extensions::registry::{TypeRegistry, OperatorRegistry, FunctionRegistry};
+use self::index::IndexBuilderRegistry;
+use self::files::{TableFile, IndexFile};
 use self::catalog::Catalog;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -79,44 +81,56 @@ impl MetadataManager {
     }
 }
 
+/// Index metadata - wraps the actual index instance
+pub struct IndexMetadata {
+    pub name: String,
+    pub index_type: String,
+    /// The actual index instance (manages its own root page ID)
+    /// TODO replace Mutex with lockless pattern
+    pub index: Arc<Mutex<Box<dyn index::Index>>>,
+}
+
 /// Runtime table metadata (file paths + schema)
-#[derive(Debug, Clone)]
 pub struct TableMetadata {
     pub name: String,
     pub file_path: PathBuf,
     pub schema: Schema,
-    /// Primary key index root page ID (None if no PK defined)
-    pub primary_index_root: Option<PageId>,
-    /// Secondary indexes: (index_name -> root page ID)
-    pub secondary_indexes: Vec<(String, PageId)>,
+    /// Primary key index (None if no PK defined)
+    pub primary_index: Option<IndexMetadata>,
+    /// Secondary indexes
+    pub secondary_indexes: Vec<IndexMetadata>,
 }
 
 /// Database with per-table file storage
 pub struct Database {
     /// Per-table file handles
     table_files: HashMap<String, Arc<TableFile>>,
-    /// Runtime metadata (paths + schemas)
-    tables: HashMap<String, TableMetadata>,
+    /// Per-table primary index file handles
+    index_files: HashMap<String, Arc<IndexFile>>,
+    /// Runtime metadata (paths + schemas, wrapped for concurrent access)
+    /// Both primary and secondary indexes are stored in TableMetadata
+    tables: HashMap<String, Arc<RwLock<TableMetadata>>>,
     /// Global catalog metadata
     catalog: Catalog,
-    /// Per-table latches for serializing index modifications
-    /// TODO implement per-page latching for proper implementation
-    index_latches: HashMap<String, Arc<Mutex<()>>>,
-    /// Extension registries for types, operators, functions, indexes
+    /// Index builder registry (always available with builtins)
+    pub index_builder_registry: Arc<IndexBuilderRegistry>,
+    /// Extension registries for types, operators, functions
     #[cfg(feature = "extensions")]
     pub type_registry: Arc<TypeRegistry>,
     #[cfg(feature = "extensions")]
     pub operator_registry: Arc<OperatorRegistry>,
     #[cfg(feature = "extensions")]
     pub function_registry: Arc<FunctionRegistry>,
-    #[cfg(feature = "extensions")]
-    pub index_builder_registry: Arc<IndexBuilderRegistry>,
 }
 
 impl Database {
     pub fn new(config: &Config) -> Self {
         // Initialize global catalog from catalog.db or create new
         let catalog = Catalog::new();
+
+        // Always initialize index_builder_registry with builtins
+        let mut index_builder_registry = IndexBuilderRegistry::new();
+        crate::extensions::builtin::register_builtin_indexes(&mut index_builder_registry);
 
         #[cfg(feature = "extensions")]
         let mut db = {
@@ -126,7 +140,6 @@ impl Database {
 
             let mut operator_registry = OperatorRegistry::new();
             let mut function_registry = FunctionRegistry::new();
-            let index_builder_registry = IndexBuilderRegistry::new();
 
             // Load extensions based on config
             let enabled_extensions = if config.load_all_extensions {
@@ -145,9 +158,9 @@ impl Database {
 
             Database {
                 table_files: HashMap::new(),
+                index_files: HashMap::new(),
                 tables: HashMap::new(),
                 catalog,
-                index_latches: HashMap::new(),
                 type_registry: Arc::new(type_registry),
                 operator_registry: Arc::new(operator_registry),
                 function_registry: Arc::new(function_registry),
@@ -158,9 +171,10 @@ impl Database {
         #[cfg(not(feature = "extensions"))]
         let mut db = Database {
             table_files: HashMap::new(),
+            index_files: HashMap::new(),
             tables: HashMap::new(),
             catalog,
-            index_latches: HashMap::new(),
+            index_builder_registry: Arc::new(index_builder_registry),
         };
 
         // Try to load catalog from disk (TODO: implement catalog.db disk I/O)
@@ -169,16 +183,119 @@ impl Database {
         db
     }
 
-    /// Load catalog from catalog.db file (TODO: implement disk I/O)
+    /// Load catalog from catalog.db file
     fn load_catalog_from_disk(&mut self) -> Result<()> {
-        // TODO: Load catalog from catalog.db using dual-segment atomic writes
-        // For now, start with empty catalog
-        Ok(())
+        use std::fs;
+
+        // Try to load from active segment (0 or 1)
+        let active_seg = self.catalog.active_segment();
+        let catalog_path = format!("catalog_{}.db", active_seg);
+
+        let data = match fs::read(&catalog_path) {
+            Ok(data) => data,
+            Err(_) => return Ok(()), // No catalog file yet, start with empty
+        };
+
+        match catalog::Catalog::deserialize(&data) {
+            Ok(loaded_catalog) => {
+                // Replace catalog with loaded version
+                self.catalog = loaded_catalog;
+
+                // Reconstruct runtime metadata and indexes from catalog
+                for table_meta in self.catalog.all_tables() {
+                    // Open table file
+                    let table_path = PathBuf::from(&table_meta.file_path);
+                    let table_file = TableFile::open(&table_path)
+                        .map_err(|e| format!("Failed to open table file during recovery: {}", e))?;
+
+                    // Reconstruct primary index if it exists
+                    let primary_index = if let Some(index_meta) = &table_meta.primary_index {
+                        let index_path = PathBuf::from(&index_meta.file_path);
+                        let index_file = IndexFile::open(&index_path)
+                            .map_err(|e| format!("Failed to open index file during recovery: {}", e))?;
+
+                        let root_page_id = base::PageId::new(index_meta.root_page_segment, index_meta.root_page_offset);
+                        let index = self.index_builder_registry.create_index(&index_meta.index_type, Some(root_page_id))
+                            .ok_or_else(|| format!("Failed to create {} index during recovery", index_meta.index_type))?;
+
+                        self.index_files.insert(table_meta.name.clone(), Arc::new(index_file));
+
+                        Some(IndexMetadata {
+                            name: index_meta.name.clone(),
+                            index_type: index_meta.index_type.clone(),
+                            index: Arc::new(Mutex::new(index)),
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Build runtime table metadata
+                    let runtime_meta = TableMetadata {
+                        name: table_meta.name.clone(),
+                        file_path: table_path,
+                        schema: table_meta.schema.clone(),
+                        primary_index,
+                        secondary_indexes: Vec::new(),
+                    };
+
+                    self.tables.insert(table_meta.name.clone(), Arc::new(RwLock::new(runtime_meta)));
+                    self.table_files.insert(table_meta.name.clone(), Arc::new(table_file));
+                }
+
+                Ok(())
+            }
+            Err(_) => {
+                // Corruption in active segment, try inactive
+                let inactive_seg = self.catalog.inactive_segment();
+                let fallback_path = format!("catalog_{}.db", inactive_seg);
+
+                let fallback_data = fs::read(&fallback_path)
+                    .map_err(|_| "Failed to load catalog from either segment".to_string())?;
+
+                let fallback_catalog = catalog::Catalog::deserialize(&fallback_data)
+                    .map_err(|e| format!("Failed to deserialize fallback catalog: {}", e))?;
+
+                // Use fallback catalog and flip segment
+                self.catalog = fallback_catalog;
+                self.catalog.flip_segment();
+
+                // Recursively load with fallback catalog
+                self.load_catalog_from_disk()
+            }
+        }
     }
 
-    /// Save catalog to catalog.db file (TODO: implement disk I/O)
+    /// Save catalog to catalog.db file with atomic flip
     fn save_catalog_to_disk(&mut self) -> Result<()> {
-        // TODO: Serialize catalog and write to catalog.db with atomic flip
+        use std::fs;
+        use std::io::Write;
+
+        // Get inactive segment to write to
+        let inactive_seg = self.catalog.inactive_segment();
+        let temp_path = format!("catalog_{}.tmp", inactive_seg);
+        let final_path = format!("catalog_{}.db", inactive_seg);
+
+        // Serialize catalog
+        let data = self.catalog.serialize()
+            .map_err(|e| format!("Failed to serialize catalog: {}", e))?;
+
+        // Write to temp file first
+        let mut temp_file = fs::File::create(&temp_path)
+            .map_err(|e| format!("Failed to create temp catalog file: {}", e))?;
+
+        temp_file.write_all(&data)
+            .map_err(|e| format!("Failed to write catalog file: {}", e))?;
+
+        temp_file.sync_all()
+            .map_err(|e| format!("Failed to sync catalog file: {}", e))?;
+
+        // Atomic rename
+        fs::rename(&temp_path, &final_path)
+            .map_err(|e| format!("Failed to rename catalog file: {}", e))?;
+
+        // Flip segment
+        self.catalog.flip_segment();
+
         Ok(())
     }
 
@@ -195,32 +312,74 @@ impl Database {
             .map_err(|e| format!("Failed to open table file: {}", e))?;
 
         // Allocate first segment (segment 0 contains table header)
-        let segment_id = table_file.allocate_segment()
+        let _segment_id = table_file.allocate_segment()
             .map_err(|e| format!("Failed to allocate segment: {}", e))?;
 
+        // Create and initialize primary index
+        let index_file_path = PathBuf::from(format!("index_{}_{}.idx", name, "pk"));
+        let index_file = IndexFile::open(&index_file_path)
+            .map_err(|e| format!("Failed to open index file: {}", e))?;
+
+        // Allocate root page for the primary index
+        let root_page_id = index_file.allocate_page()
+            .map_err(|e| format!("Failed to allocate index root page: {}", e))?;
+
+        // Create BTree index via registry
+        let index = self.index_builder_registry.create_index("btree", Some(root_page_id))
+            .ok_or_else(|| "Failed to create btree index".to_string())?;
+
+        let primary_index = Some(IndexMetadata {
+            name: "pk".to_string(),
+            index_type: "btree".to_string(),
+            index: Arc::new(Mutex::new(index)),
+        });
+
         // Create runtime metadata
+        let metadata_schema = schema.clone();
         let metadata = TableMetadata {
             name: name.clone(),
             file_path: file_path.clone(),
             schema,
-            primary_index_root: None,
+            primary_index,
             secondary_indexes: Vec::new(),
         };
 
-        // Insert into runtime tables
+        // Insert into runtime tables (wrapped in Arc<RwLock<>>)
         // TODO check or mutex to prevent duplicate tables
-        self.tables.insert(name.clone(), metadata);
+        self.tables.insert(name.clone(), Arc::new(RwLock::new(metadata)));
         self.table_files.insert(name.clone(), Arc::new(table_file));
+        self.index_files.insert(name.clone(), Arc::new(index_file));
 
-        // TODO: Update catalog and persist to catalog.db
+        // Build and save metadata to catalog
+        let primary_index_meta = catalog::IndexFileMetadata {
+            name: "pk".to_string(),
+            index_type: "btree".to_string(),
+            file_path: index_file_path.to_string_lossy().to_string(),
+            root_page_segment: root_page_id.segment_id(),
+            root_page_offset: root_page_id.page_offset(),
+        };
+
+        let table_meta = catalog::TableFileMetadata {
+            name: name.clone(),
+            file_path: file_path.to_string_lossy().to_string(),
+            schema: metadata_schema,
+            next_segment_id: 1, // We allocated segment 0
+            primary_index: Some(primary_index_meta),
+            secondary_indexes: Vec::new(),
+        };
+
+        self.catalog.add_table(table_meta)
+            .map_err(|e| format!("Failed to add table to catalog: {}", e))?;
+
         self.save_catalog_to_disk()?;
 
         Ok(())
     }
 
-    pub fn get_table(&self, name: &str) -> Result<&TableMetadata> {
+    pub fn get_table(&self, name: &str) -> Result<Arc<RwLock<TableMetadata>>> {
         self.tables
             .get(name)
+            .cloned()
             .ok_or_else(|| format!("Table not found: {}", name))
     }
 
@@ -229,8 +388,10 @@ impl Database {
             .ok_or_else(|| format!("Table not found: {}", table_name))?
             .clone();
 
-        let metadata = self.tables.get(table_name)
-            .ok_or_else(|| format!("Table not found: {}", table_name))?;
+        let metadata_arc = self.tables.get(table_name)
+            .ok_or_else(|| format!("Table not found: {}", table_name))?
+            .clone();
+        let metadata = metadata_arc.read();
 
         // Validate row against schema
         if row.len() != metadata.schema.len() {
@@ -261,8 +422,31 @@ impl Database {
         table_file.write_block(segment_id, block_id, &block)
             .map_err(|e| format!("Failed to write block: {}", e))?;
 
-        // TODO: Update primary key index if table has one
-        let _tuple_ptr = TuplePointer::new(segment_id, block_id, slot_id);
+        // Create tuple pointer for the inserted row
+        let tuple_ptr = TuplePointer::new(segment_id, block_id, slot_id);
+
+        // Update primary key index if table has one
+        if let Some(primary_index_meta) = &metadata.primary_index {
+            // Extract primary key from first column (TODO: assume first column is PK)
+            let key_value = row.get(0)
+                .ok_or_else(|| "Row must have at least one column for primary key".to_string())?;
+
+            // Convert Value to u64 key (handle Int type)
+            let key = match key_value {
+                crate::types::Value::Int(n) => *n as u64,
+                crate::types::Value::Null => return Err("Primary key cannot be NULL".to_string()),
+                _ => return Err(format!("Primary key must be Int type, got {:?}", key_value)),
+            };
+
+            // Get index file
+            let index_file = self.index_files.get(table_name)
+                .ok_or_else(|| format!("Index file not found for table: {}", table_name))?;
+
+            // Lock index and insert
+            let mut index_guard = primary_index_meta.index.lock();
+            index_guard.insert(key, tuple_ptr, index_file)
+                .map_err(|e| format!("Failed to insert into primary index: {}", e))?;
+        }
 
         Ok(())
     }
@@ -300,7 +484,8 @@ impl Database {
     }
 
     pub fn get_schema(&self, table_name: &str) -> Result<Schema> {
-        let metadata = self.get_table(table_name)?;
+        let metadata_arc = self.get_table(table_name)?;
+        let metadata = metadata_arc.read();
         Ok(metadata.schema.clone())
     }
 
@@ -316,15 +501,101 @@ impl Database {
         Ok(())
     }
 
-    /// Point lookup using primary index (STUB)
-    pub fn get_by_key(&self, _table_name: &str, _key: u64) -> Result<Option<TuplePointer>> {
-        // TODO: Implement once IndexDiskManager is wired up
-        Ok(None)
+    /// Point lookup using primary index
+    pub fn get_by_key(&self, table_name: &str, key: u64) -> Result<Option<TuplePointer>> {
+        let metadata_arc = self.get_table(table_name)?;
+        let metadata = metadata_arc.read();
+
+        // Return None if table has no primary index
+        let primary_index_meta = match &metadata.primary_index {
+            Some(idx) => idx,
+            None => {
+                debug!(table_name, "no primary index found on table");
+                return Ok(None)
+            },
+        };
+
+        // Get index file
+        let index_file = self.index_files.get(table_name)
+            .ok_or_else(|| format!("Index file not found for table: {}", table_name))?;
+
+        // Lock index and search
+        let index_guard = primary_index_meta.index.lock();
+        index_guard.search(key, index_file)
+            .map_err(|e| format!("Failed to search primary index: {}", e))
     }
 
-    /// Range scan using primary index (STUB)
-    pub fn range_scan_index(&self, _table_name: &str, _start_key: u64, _end_key: u64) -> Result<Vec<TuplePointer>> {
-        // TODO: Implement once IndexDiskManager is wired up
-        Ok(Vec::new())
+    /// Range scan using primary index
+    /// Returns all tuple pointers for keys in [start_key, end_key] inclusive
+    /// Returns empty vec if table has no primary index or index doesn't support range scans
+    pub fn range_scan_index(&self, table_name: &str, start_key: u64, end_key: u64) -> Result<Vec<TuplePointer>> {
+        let metadata_arc = self.get_table(table_name)?;
+        let metadata = metadata_arc.read();
+
+        // Return empty if table has no primary index
+        let primary_index_meta = match &metadata.primary_index {
+            Some(idx) => idx,
+            None => {
+                debug!(table_name, "no primary index found on table");
+                return Ok(Vec::new())
+            },
+        };
+
+        // Check if index supports range scans
+        if primary_index_meta.index.lock().capability() != index::IndexCapability::Ordered {
+            // TODO do we just proceed with a full table scan?
+            return Ok(Vec::new());
+        }
+
+        // Get index file
+        let index_file = self.index_files.get(table_name)
+            .ok_or_else(|| format!("Index file not found for table: {}", table_name))?;
+
+        // Lock index and perform range scan
+        let index_guard = primary_index_meta.index.lock();
+        index_guard.range_scan(start_key, end_key, index_file)
+            .map(|results| results.into_iter().map(|(_, ptr)| ptr).collect())
+            .map_err(|e| format!("Failed to range scan primary index: {}", e))
+    }
+
+    /// Create a secondary index on a table
+    pub fn create_secondary_index(&mut self, index_name: String, table_name: String, column_name: String, index_type: String) -> Result<()> {
+        // Get the table metadata
+        let metadata_arc = self.get_table(&table_name)?;
+
+        // Create index file
+        let index_file_path = PathBuf::from(format!("index_{}_{}_{}.idx", table_name, column_name, &index_name));
+        let index_file = IndexFile::open(&index_file_path)
+            .map_err(|e| format!("Failed to open index file: {}", e))?;
+
+        // Allocate root page for the secondary index
+        let root_page_id = index_file.allocate_page()
+            .map_err(|e| format!("Failed to allocate index root page: {}", e))?;
+
+        // Create index instance via registry
+        let index = self.index_builder_registry.create_index(&index_type, Some(root_page_id))
+            .ok_or_else(|| format!("Failed to create {} index", index_type))?;
+
+        // Create index metadata
+        let index_meta = IndexMetadata {
+            name: index_name.clone(),
+            index_type: index_type.clone(),
+            index: Arc::new(Mutex::new(index)),
+        };
+
+        // Add to TableMetadata.secondary_indexes
+        {
+            let mut metadata = metadata_arc.write();
+            metadata.secondary_indexes.push(index_meta);
+        }
+
+        // Store index file for later access
+        let index_file_key = format!("{}_{}", table_name, index_name);
+        self.index_files.insert(index_file_key, Arc::new(index_file));
+
+        // TODO: Update catalog to persist secondary index metadata
+        // catalog.add_secondary_index(...)?;
+
+        Ok(())
     }
 }

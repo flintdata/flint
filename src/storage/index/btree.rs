@@ -145,6 +145,51 @@ impl BTree {
             .map(|e| (e.key, e.as_tuple_pointer()))
             .collect())
     }
+
+    /// Find the leaf page containing a given key by traversing internal nodes
+    fn find_leaf_page(
+        &self,
+        key: u64,
+        disk_mgr: &IndexFile,
+    ) -> IoResult<IndexPage> {
+        let mut current_page_id = match self.root_page_id {
+            None => return Err(io::Error::new(io::ErrorKind::NotFound, "No root page")),
+            Some(id) => id,
+        };
+
+        loop {
+            let page_data = disk_mgr.read_page(current_page_id)?;
+            let current_page = IndexPage { data: page_data };
+            let header = current_page.header()?;
+
+            if header.is_leaf {
+                return Ok(current_page);
+            }
+
+            // Internal node: find child to traverse
+            let (found, pos) = current_page.binary_search(key)?;
+
+            // For internal nodes, position tells us which child to follow
+            // If found, child is at pos; if not found, child is at pos
+            let child_index = if found { pos } else { pos };
+
+            // Get the entry at child_index to find next page
+            let entry = if child_index < header.num_keys as usize {
+                current_page.get_entry(child_index)?
+            } else {
+                // Key is greater than all keys in this node, use rightmost child
+                if header.num_keys == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Internal node has no keys",
+                    ));
+                }
+                current_page.get_entry((header.num_keys - 1) as usize)?
+            };
+
+            current_page_id = entry.as_child_page_id();
+        }
+    }
 }
 
 impl super::Index for BTree {
@@ -194,21 +239,9 @@ impl super::Index for BTree {
         key: u64,
         disk_mgr: &IndexFile,
     ) -> IoResult<Option<TuplePointer>> {
-        let root_id = match self.root_page_id {
-            None => return Ok(None),
-            Some(id) => id,
-        };
-
-        let page_data = disk_mgr.read_page(root_id)?;
-        let root_page = super::page::IndexPage { data: page_data };
-
-        // For now, only handle single-level tree (root is leaf)
-        if root_page.header()?.is_leaf {
-            Self::search_page(&root_page, key)
-        } else {
-            // TODO: traverse internal nodes
-            Ok(None)
-        }
+        // Find the leaf page containing the key
+        let leaf_page = self.find_leaf_page(key, disk_mgr)?;
+        Self::search_page(&leaf_page, key)
     }
 }
 
@@ -219,37 +252,17 @@ impl super::OrderedIndex for BTree {
         end_key: u64,
         disk_mgr: &IndexFile,
     ) -> IoResult<Vec<(u64, TuplePointer)>> {
-        let root_id = match self.root_page_id {
-            None => return Ok(Vec::new()),
-            Some(id) => id,
-        };
-
-        let page_data = disk_mgr.read_page(root_id)?;
-        let root_page = super::page::IndexPage { data: page_data };
-
-        if root_page.header()?.is_leaf {
-            Self::range_scan_page(&root_page, start_key, end_key)
-        } else {
-            // TODO: traverse internal nodes
-            Ok(Vec::new())
-        }
+        // Find the leftmost leaf containing start_key
+        let leaf_page = self.find_leaf_page(start_key, disk_mgr)?;
+        Self::range_scan_page(&leaf_page, start_key, end_key)
     }
 
     fn full_scan(&self, disk_mgr: &IndexFile) -> IoResult<Vec<(u64, TuplePointer)>> {
-        let root_id = match self.root_page_id {
-            None => return Ok(Vec::new()),
-            Some(id) => id,
-        };
-
-        let page_data = disk_mgr.read_page(root_id)?;
-        let root_page = super::page::IndexPage { data: page_data };
-
-        if root_page.header()?.is_leaf {
-            Self::scan_page(&root_page)
-        } else {
-            // TODO: traverse internal nodes
-            Ok(Vec::new())
-        }
+        // Find the leftmost leaf by searching for key 0
+        let leaf_page = self.find_leaf_page(0, disk_mgr)?;
+        Self::scan_page(&leaf_page)
+        // NOTE: Without sibling pointers, we only scan the first leaf found.
+        // Full implementation would need B+ tree sibling links to scan all leaves.
     }
 }
 

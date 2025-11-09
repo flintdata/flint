@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use crate::storage::base::{Block, SegmentHeader, SEGMENT_SIZE, SEGMENT_HEADER_SIZE, BLOCK_SIZE, BLOCKS_PER_UNCOMPRESSED_SEGMENT};
 use crate::storage::io::{Disk, alloc_aligned};
 use crate::storage::base::PageId;
-use crate::storage::index::IndexPage;
 
 const PAGE_SIZE: usize = 4096;
 

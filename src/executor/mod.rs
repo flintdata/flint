@@ -59,7 +59,7 @@ impl Executor {
                 }
                 Statement::CreateTable(ct) => {
                     debug!("executing: create table");
-                    let (table_name, schema) = planner::extract_create_table(ct)?;
+                    let (table_name, schema, _primary_key_col) = planner::extract_create_table(ct)?;
                     let mut db = self.db.write();
                     db.create_table(table_name.clone(), schema)
                         .map_err(|e| ExecutorError::Execution(e))?;
@@ -96,6 +96,32 @@ impl Executor {
                             .map_err(|e| ExecutorError::Execution(e))?;
                     }
                     debug!(table = %table_name, "rows inserted");
+                    Ok(Response::EmptyQuery)
+                }
+                Statement::CreateIndex(ci) => {
+                    debug!("executing: create index");
+                    let (table_name, column_name, index_type) = planner::extract_create_index(ci)?;
+
+                    // Extract index name from the CREATE INDEX statement
+                    let index_name = ci.name.as_ref()
+                        .map(|name| name.0.iter()
+                            .filter_map(|part| part.as_ident())
+                            .map(|ident| ident.value.clone())
+                            .collect::<Vec<_>>()
+                            .join("."))
+                        .unwrap_or_else(|| format!("idx_{}", table_name));
+
+                    // Call database to create the secondary index
+                    self.db.write()
+                        .create_secondary_index(
+                            index_name.clone(),
+                            table_name.clone(),
+                            column_name.clone(), 
+                            index_type.clone(),
+                        )
+                        .map_err(|e| ExecutorError::Execution(e))?;
+
+                    debug!(table = %table_name, column = %column_name, index_type = %index_type, index_name = %index_name, "secondary index created");
                     Ok(Response::EmptyQuery)
                 }
                 _ => {

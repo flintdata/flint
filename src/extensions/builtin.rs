@@ -1,6 +1,10 @@
 use super::{TypeExtension, TypeCategory};
 use std::any::Any;
 use pgwire::api::Type;
+use crate::storage::index::{IndexBuilder, Index};
+use crate::storage::PageId;
+use crate::storage::index::btree::BTree;
+use crate::storage::index::hash::HashIndex;
 
 /// Built-in Int type extension
 pub struct IntType;
@@ -176,6 +180,33 @@ impl TypeExtension for NullType {
     }
 }
 
+/// Built-in BTree index builder
+pub struct BTreeBuilder;
+
+impl IndexBuilder for BTreeBuilder {
+    fn create(&self, root_page_id: Option<PageId>) -> Box<dyn Index> {
+        Box::new(BTree::new(root_page_id))
+    }
+
+    fn type_name(&self) -> &str {
+        "btree"
+    }
+}
+
+/// Built-in Hash index builder
+pub struct HashIndexBuilder;
+
+impl IndexBuilder for HashIndexBuilder {
+    fn create(&self, root_page_id: Option<PageId>) -> Box<dyn Index> {
+        // Hash indexes use dynamic bucket allocation
+        Box::new(HashIndex::new(root_page_id))
+    }
+
+    fn type_name(&self) -> &str {
+        "hash"
+    }
+}
+
 /// Register all built-in type extensions
 pub fn register_builtin_types(registry: &mut super::registry::TypeRegistry) {
     registry.register(Box::new(IntType));
@@ -183,4 +214,10 @@ pub fn register_builtin_types(registry: &mut super::registry::TypeRegistry) {
     registry.register(Box::new(StringType));
     registry.register(Box::new(BoolType));
     registry.register(Box::new(NullType));
+}
+
+/// Register all built-in index builders
+pub fn register_builtin_indexes(registry: &mut crate::storage::index::IndexBuilderRegistry) {
+    registry.register("btree", Box::new(BTreeBuilder));
+    registry.register("hash", Box::new(HashIndexBuilder));
 }

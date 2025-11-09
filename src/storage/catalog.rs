@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::{self, Result};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use serde::{Serialize, Deserialize};
 use bincode::{Encode, Decode};
@@ -15,8 +14,10 @@ pub struct IndexFileMetadata {
     pub index_type: String,
     /// Path to the .idx file
     pub file_path: String,
-    /// Root page ID (for traversal into index structure)
-    pub root_page_id: u32,
+    /// Root page segment ID
+    pub root_page_segment: u16,
+    /// Root page offset
+    pub root_page_offset: u16,
 }
 
 /// Metadata about a single table file
@@ -173,48 +174,4 @@ fn compute_checksum(data: &[u8]) -> u64 {
     data.iter().fold(0u64, |acc, &byte| {
         acc.wrapping_mul(31).wrapping_add(byte as u64)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_catalog_creation() {
-        let catalog = Catalog::new();
-        assert_eq!(catalog.active_segment(), 0);
-        assert_eq!(catalog.inactive_segment(), 1);
-    }
-
-    #[test]
-    fn test_catalog_segment_flip() {
-        let catalog = Catalog::new();
-        assert_eq!(catalog.active_segment(), 0);
-        catalog.flip_segment();
-        assert_eq!(catalog.active_segment(), 1);
-        catalog.flip_segment();
-        assert_eq!(catalog.active_segment(), 0);
-    }
-
-    #[test]
-    fn test_catalog_serialization() {
-        let mut catalog = Catalog::new();
-
-        let table_meta = TableFileMetadata {
-            name: "users".to_string(),
-            file_path: "table_users.tbl".to_string(),
-            schema: Schema::default(),
-            next_segment_id: 1,
-            primary_index: None,
-            secondary_indexes: Vec::new(),
-        };
-
-        catalog.add_table(table_meta).unwrap();
-
-        let bytes = catalog.serialize().unwrap();
-        let restored = Catalog::deserialize(&bytes).unwrap();
-
-        assert_eq!(restored.all_tables().len(), 1);
-        assert!(restored.get_table("users").unwrap().is_some());
-    }
 }

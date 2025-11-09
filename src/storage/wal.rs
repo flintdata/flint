@@ -205,7 +205,7 @@ impl WalFile {
     }
 
     /// Iterate through all entries in the log starting from offset
-    pub fn iter_from(&self, start_offset: u64) -> WalIterator {
+    pub fn iter_from(&self, start_offset: u64) -> WalIterator<'_> {
         WalIterator {
             wal: self,
             current_offset: start_offset,

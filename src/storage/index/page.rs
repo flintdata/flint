@@ -13,10 +13,17 @@ pub struct IndexPageHeader {
     pub magic: u32,
     /// True if this is a leaf node
     pub is_leaf: bool,
+    /// Padding to align num_keys to 2-byte boundary
+    _padding1: u8,
     /// Number of keys in this node
     pub num_keys: u16,
+    /// Sibling page pointers (for B+ tree leaf traversal)
+    /// Stores PageId as u32: (segment_id << 16 | page_offset)
+    /// 0 means no sibling (first/last leaf)
+    pub prev_page_id: u32,
+    pub next_page_id: u32,
     /// Padding to reach 64 bytes
-    pub _reserved: [u8; 57],
+    pub _reserved: [u8; 48],
 }
 
 impl IndexPageHeader {
@@ -26,8 +33,11 @@ impl IndexPageHeader {
         IndexPageHeader {
             magic: Self::MAGIC,
             is_leaf,
+            _padding1: 0,
             num_keys: 0,
-            _reserved: [0; 57],
+            prev_page_id: 0,  // No previous sibling
+            next_page_id: 0,  // No next sibling
+            _reserved: [0; 48],
         }
     }
 
@@ -42,8 +52,8 @@ impl IndexPageHeader {
     }
 }
 
-/// Single entry in index page: key (u64) + pointer (TuplePointer, 7 bytes)
-/// Total: 15 bytes per entry
+/// Single entry in index page: key (u64) + pointer info (7 bytes + 1 byte padding)
+/// Total: 16 bytes per entry (key=8, segment_id=4, block_id=1, padding=1, slot_id=2)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct IndexEntry {
@@ -63,12 +73,31 @@ impl IndexEntry {
         }
     }
 
+    /// Create entry for internal node with child page ID
+    pub fn new_internal(key: u64, child_page_id: crate::storage::base::PageId) -> Self {
+        IndexEntry {
+            key,
+            segment_id: child_page_id.raw(),  // Store entire u32 in segment_id
+            block_id: 0,
+            slot_id: 0, // unused for internal nodes
+        }
+    }
+
     pub fn as_tuple_pointer(&self) -> TuplePointer {
         TuplePointer {
             segment_id: self.segment_id,
             block_id: self.block_id,
             slot_id: self.slot_id,
         }
+    }
+
+    /// Extract child page ID from internal node entry
+    pub fn as_child_page_id(&self) -> crate::storage::base::PageId {
+        // Decode u32 stored in segment_id back to (segment, offset)
+        let raw = self.segment_id;
+        let segment = (raw >> 16) as u16;
+        let offset = (raw & 0xFFFF) as u16;
+        crate::storage::base::PageId::new(segment, offset)
     }
 }
 
@@ -124,8 +153,35 @@ impl IndexPage {
         Ok(())
     }
 
+    /// Get next sibling page ID (0 if no sibling)
+    pub fn next_sibling(&self) -> io::Result<Option<crate::storage::base::PageId>> {
+        let header = self.header()?;
+        if header.next_page_id == 0 {
+            Ok(None)
+        } else {
+            let raw = header.next_page_id;
+            let segment = (raw >> 16) as u16;
+            let offset = (raw & 0xFFFF) as u16;
+            Ok(Some(crate::storage::base::PageId::new(segment, offset)))
+        }
+    }
+
+    /// Set next sibling page ID
+    pub fn set_next_sibling(&mut self, next_id: Option<crate::storage::base::PageId>) -> io::Result<()> {
+        let mut header = self.header()?;
+        header.next_page_id = next_id.map(|id| id.raw()).unwrap_or(0);
+        self.write_header(&header)
+    }
+
+    /// Set prev sibling page ID
+    pub fn set_prev_sibling(&mut self, prev_id: Option<crate::storage::base::PageId>) -> io::Result<()> {
+        let mut header = self.header()?;
+        header.prev_page_id = prev_id.map(|id| id.raw()).unwrap_or(0);
+        self.write_header(&header)
+    }
+
     /// Calculate maximum entries per page
-    /// (INDEX_PAGE_SIZE - header) / entry_size = (4096 - 64) / 15 ≈ 269
+    /// (INDEX_PAGE_SIZE - header) / entry_size = (4096 - 64) / 16 = 252
     pub fn max_entries() -> usize {
         (INDEX_PAGE_SIZE - std::mem::size_of::<IndexPageHeader>()) / std::mem::size_of::<IndexEntry>()
     }
@@ -273,5 +329,47 @@ impl IndexPage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_index_page_header_size() {
+        // Header must be exactly 64 bytes
+        assert_eq!(
+            std::mem::size_of::<IndexPageHeader>(),
+            64,
+            "IndexPageHeader must be 64 bytes (magic=4, is_leaf=1, num_keys=2, prev=4, next=4, reserved=49)"
+        );
+    }
+
+    #[test]
+    fn test_index_entry_size() {
+        // Entry must be exactly 16 bytes (fits ~252 per 4KB page)
+        assert_eq!(
+            std::mem::size_of::<IndexEntry>(),
+            16,
+            "IndexEntry must be 16 bytes (key=8, segment_id=4, block_id=1, padding=1, slot_id=2)"
+        );
+    }
+
+    #[test]
+    fn test_max_entries_per_page() {
+        // (4096 - 64) / 16 = 252
+        assert_eq!(IndexPage::max_entries(), 252);
+    }
+
+    #[test]
+    fn test_index_page_header_alignment() {
+        // Verify layout matches expectations
+        let header = IndexPageHeader::new(true);
+        assert_eq!(header.magic, 0x494E4458);  // "INDX"
+        assert!(header.is_leaf);
+        assert_eq!(header.num_keys, 0);
+        assert_eq!(header.prev_page_id, 0);
+        assert_eq!(header.next_page_id, 0);
     }
 }
