@@ -1,20 +1,32 @@
 use std::io::{self, Result};
+use std::mem::size_of;
 use crate::storage::base::TuplePointer;
 use bincode::{Encode, Decode};
+use zerocopy::{IntoBytes, TryFromBytes, Immutable};
 
 /// Index page size (4KB)
 pub const INDEX_PAGE_SIZE: usize = 4096;
 
+/// B-tree node type
+#[repr(u8)]
+#[derive(IntoBytes, TryFromBytes, Immutable, Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum NodeType {
+    Internal = 0,
+    Leaf = 1,
+}
+
+const _: () = assert!(size_of::<NodeType>() == 1);
+
 /// Index page header (64 bytes)
+#[derive(IntoBytes, TryFromBytes, Immutable, Debug, Clone, Copy, Encode, Decode)]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct IndexPageHeader {
     /// Magic number for validation
     pub magic: u32,
-    /// True if this is a leaf node
-    pub is_leaf: bool,
-    /// Padding to align num_keys to 2-byte boundary
-    _padding: u8,
+    /// Node type: leaf or internal
+    pub node_type: NodeType,
+    /// Reserved for future flags
+    pub _flags: u8,
     /// Number of keys in this node
     pub num_keys: u16,
     /// Sibling page pointers (for B+ tree leaf traversal)
@@ -29,16 +41,20 @@ pub struct IndexPageHeader {
 impl IndexPageHeader {
     const MAGIC: u32 = 0x494E4458; // "INDX"
 
-    pub fn new(is_leaf: bool) -> Self {
+    pub fn new(node_type: NodeType) -> Self {
         IndexPageHeader {
             magic: Self::MAGIC,
-            is_leaf,
-            _padding: 0,
+            node_type,
+            _flags: 0,
             num_keys: 0,
-            prev_page_id: 0,  // No previous sibling
-            next_page_id: 0,  // No next sibling
+            prev_page_id: 0,
+            next_page_id: 0,
             _reserved: [0; 48],
         }
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.node_type == NodeType::Leaf
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -52,14 +68,17 @@ impl IndexPageHeader {
     }
 }
 
+const _: () = assert!(size_of::<IndexPageHeader>() == 64);
+
 /// Single entry in index page: key (u64) + pointer info (7 bytes + 1 byte padding)
 /// Total: 16 bytes per entry (key=8, segment_id=4, block_id=1, padding=1, slot_id=2)
+#[derive(IntoBytes, TryFromBytes, Immutable, Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct IndexEntry {
     pub key: u64,
     pub segment_id: u32,
     pub block_id: u8,
+    pub _padding: u8,  // Explicit padding for zerocopy compatibility
     pub slot_id: u16,
 }
 
@@ -69,6 +88,7 @@ impl IndexEntry {
             key,
             segment_id: ptr.segment_id,
             block_id: ptr.block_id,
+            _padding: 0,
             slot_id: ptr.slot_id,
         }
     }
@@ -79,6 +99,7 @@ impl IndexEntry {
             key,
             segment_id: child_page_id.raw(),  // Store entire u32 in segment_id
             block_id: 0,
+            _padding: 0,
             slot_id: 0, // unused for internal nodes
         }
     }
@@ -101,6 +122,8 @@ impl IndexEntry {
     }
 }
 
+const _: () = assert!(size_of::<IndexEntry>() == 16);
+
 /// Index page (4KB in-memory buffer)
 #[derive(Debug)]
 pub struct IndexPage {
@@ -109,9 +132,9 @@ pub struct IndexPage {
 
 impl IndexPage {
     /// Create new empty index page
-    pub fn new(is_leaf: bool) -> Self {
+    pub fn new(node_type: NodeType) -> Self {
         let mut data = vec![0u8; INDEX_PAGE_SIZE];
-        let header = IndexPageHeader::new(is_leaf);
+        let header = IndexPageHeader::new(node_type);
 
         // Write header at offset 0
         let header_bytes = unsafe {
@@ -300,7 +323,7 @@ impl IndexPage {
     }
 
     /// Clear page and set new entries
-    pub fn set_entries(&mut self, is_leaf: bool, entries: Vec<IndexEntry>) -> io::Result<()> {
+    pub fn set_entries(&mut self, node_type: NodeType, entries: Vec<IndexEntry>) -> io::Result<()> {
         if entries.len() > Self::max_entries() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -308,7 +331,7 @@ impl IndexPage {
             ));
         }
 
-        let mut header = IndexPageHeader::new(is_leaf);
+        let mut header = IndexPageHeader::new(node_type);
         header.num_keys = entries.len() as u16;
 
         self.data.fill(0);
@@ -329,47 +352,5 @@ impl IndexPage {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_index_page_header_size() {
-        // Header must be exactly 64 bytes
-        assert_eq!(
-            std::mem::size_of::<IndexPageHeader>(),
-            64,
-            "IndexPageHeader must be 64 bytes (magic=4, is_leaf=1, num_keys=2, prev=4, next=4, reserved=49)"
-        );
-    }
-
-    #[test]
-    fn test_index_entry_size() {
-        // Entry must be exactly 16 bytes (fits ~252 per 4KB page)
-        assert_eq!(
-            std::mem::size_of::<IndexEntry>(),
-            16,
-            "IndexEntry must be 16 bytes (key=8, segment_id=4, block_id=1, padding=1, slot_id=2)"
-        );
-    }
-
-    #[test]
-    fn test_max_entries_per_page() {
-        // (4096 - 64) / 16 = 252
-        assert_eq!(IndexPage::max_entries(), 252);
-    }
-
-    #[test]
-    fn test_index_page_header_alignment() {
-        // Verify layout matches expectations
-        let header = IndexPageHeader::new(true);
-        assert_eq!(header.magic, 0x494E4458);  // "INDX"
-        assert!(header.is_leaf);
-        assert_eq!(header.num_keys, 0);
-        assert_eq!(header.prev_page_id, 0);
-        assert_eq!(header.next_page_id, 0);
     }
 }

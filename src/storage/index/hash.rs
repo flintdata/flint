@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::storage::base::TuplePointer;
 use crate::storage::files::IndexFile;
 use crate::storage::base::PageId;
-use super::page::{IndexEntry, IndexPage};
+use super::page::{IndexEntry, IndexPage, NodeType};
 
 /// Hash index with dynamic bucket allocation
 /// Uses SipHash-style mixing for cryptographic safety against hash collision attacks
@@ -94,7 +94,7 @@ impl HashIndex {
 
         // Allocate new bucket page
         let page_id = disk_mgr.allocate_page()?;
-        let page = IndexPage::new(true); // Hash buckets are leaf pages
+        let page = IndexPage::new(NodeType::Leaf); // Hash buckets are leaf pages
         disk_mgr.write_page(page_id, &page.data)?;
 
         self.bucket_pages.insert(bucket_hash, page_id);
@@ -201,7 +201,7 @@ impl super::Index for HashIndex {
                         None => {
                             // Allocate new overflow page
                             let overflow_id = disk_mgr.allocate_page()?;
-                            let mut overflow_page = IndexPage::new(true);
+                            let mut overflow_page = IndexPage::new(NodeType::Leaf);
 
                             // Link current page to overflow
                             current_page.set_next_sibling(Some(overflow_id))?;

@@ -2,7 +2,7 @@ use std::io::{self, Result as IoResult};
 use crate::storage::base::TuplePointer;
 use crate::storage::files::IndexFile;
 use crate::storage::base::PageId;
-use super::page::{IndexEntry, IndexPage, IndexPageHeader};
+use super::page::{IndexEntry, IndexPage, IndexPageHeader, NodeType};
 
 /// Represents a split result when a node overflows
 #[derive(Debug)]
@@ -84,7 +84,7 @@ impl BTree {
 
         // Get page info
         let header = page.header()?;
-        let is_leaf = header.is_leaf;
+        let is_leaf = header.is_leaf();
 
         // Calculate split point (roughly middle)
         let split_point = entries.len() / 2;
@@ -94,11 +94,13 @@ impl BTree {
         let promoted_key = right_entries[0].key;
 
         // Left page keeps the lower keys
-        page.set_entries(is_leaf, entries)?;
+        let node_type_left = if is_leaf { NodeType::Leaf } else { NodeType::Internal };
+        page.set_entries(node_type_left, entries)?;
 
         // Right page gets the higher keys
-        let mut right_page = IndexPage::new(is_leaf);
-        right_page.set_entries(is_leaf, right_entries)?;
+        let node_type = if is_leaf { NodeType::Leaf } else { NodeType::Internal };
+        let mut right_page = IndexPage::new(node_type);
+        right_page.set_entries(node_type, right_entries)?;
 
         Ok(Some(SplitResult {
             promoted_key,
@@ -162,7 +164,7 @@ impl BTree {
             let current_page = IndexPage { data: page_data };
             let header = current_page.header()?;
 
-            if header.is_leaf {
+            if header.is_leaf() {
                 return Ok(current_page);
             }
 

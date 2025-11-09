@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::storage::base::{Block, BlockHeader, SegmentHeader, SEGMENT_SIZE, SEGMENT_HEADER_SIZE, BLOCK_SIZE, BLOCKS_PER_UNCOMPRESSED_SEGMENT};
 use crate::storage::io::{Disk, alloc_aligned};
 use crate::storage::base::PageId;
-use zerocopy::IntoBytes;
+use zerocopy::{IntoBytes, FromBytes};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -49,7 +49,10 @@ impl TableFile {
         self.disk.read_at(offset, &mut buf)?;
 
         // Deserialize header
-        let header = unsafe { std::ptr::read(buf.as_ptr() as *const SegmentHeader) };
+        let header = match SegmentHeader::read_from_bytes(&buf[..std::mem::size_of::<SegmentHeader>()]) {
+            Ok(h) => h,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Failed to read segment header")),
+        };
 
         // Validate magic
         if header.magic != 0x464C4E54 {
@@ -68,13 +71,8 @@ impl TableFile {
         let mut buf = alloc_aligned(SEGMENT_HEADER_SIZE);
 
         // Serialize header
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                header as *const SegmentHeader as *const u8,
-                buf.as_mut_ptr(),
-                std::mem::size_of::<SegmentHeader>(),
-            );
-        }
+        let header_bytes = header.as_bytes();
+        buf[..header_bytes.len()].copy_from_slice(header_bytes);
 
         self.disk.write_at(offset, &buf)?;
         Ok(())
@@ -90,10 +88,13 @@ impl TableFile {
         }
 
         let offset = Self::block_offset(segment_id, block_id);
-        let mut buf = alloc_aligned(BLOCK_SIZE);
-        self.disk.read_at(offset, &mut buf)?;
+        // Allocate as Vec<u32> to ensure 4-byte alignment for zerocopy
+        let num_u32s = BLOCK_SIZE / std::mem::size_of::<u32>();
+        let mut data = vec![0u32; num_u32s];
+        let data_bytes = data.as_mut_bytes();
+        self.disk.read_at(offset, data_bytes)?;
 
-        Ok(Block { data: buf })
+        Ok(Block { data })
     }
 
     /// Write block (64KB) - atomic write unit
@@ -106,18 +107,21 @@ impl TableFile {
         }
 
         let offset = Self::block_offset(segment_id, block_id);
-        self.disk.write_at(offset, &block.data)?;
+        self.disk.write_at(offset, block.as_bytes())?;
         Ok(())
     }
 
     /// Create an initialized block with valid BlockHeader (safe via zerocopy)
     fn create_initialized_block() -> Block {
-        let mut data = alloc_aligned(BLOCK_SIZE);
+        // Allocate as Vec<u32> to ensure 4-byte alignment for zerocopy
+        let num_u32s = BLOCK_SIZE / std::mem::size_of::<u32>();
+        let mut data = vec![0u32; num_u32s];
         let header = BlockHeader::new();
 
         // Write header to beginning of block using zerocopy's safe conversion
         let header_bytes = header.as_bytes();
-        data[0..header_bytes.len()].copy_from_slice(header_bytes);
+        let data_bytes = data.as_mut_bytes();
+        data_bytes[0..header_bytes.len()].copy_from_slice(header_bytes);
 
         Block { data }
     }

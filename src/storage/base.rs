@@ -1,6 +1,6 @@
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
-use zerocopy::{IntoBytes, FromBytes, Immutable};
+use zerocopy::{IntoBytes, FromBytes, Immutable, KnownLayout, Ref};
 
 /// Block size for I/O operations (64KB)
 pub const BLOCK_SIZE: usize = 64 * 1024;
@@ -124,7 +124,8 @@ impl SegmentHeader {
 }
 
 /// Block header for slotted page
-#[derive(IntoBytes, FromBytes, Immutable)]
+/// zerocopy-verified safe layout: IntoBytes + FromBytes guarantee no padding between fields
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct BlockHeader {
     /// Number of slots in this block
@@ -140,6 +141,7 @@ pub struct BlockHeader {
 }
 
 const BLOCK_HEADER_SIZE: usize = 16;
+const _: () = assert!(size_of::<BlockHeader>() == BLOCK_HEADER_SIZE);
 
 impl BlockHeader {
     pub fn new() -> Self {
@@ -158,6 +160,8 @@ impl BlockHeader {
 }
 
 /// Slot directory entry
+/// zerocopy-verified safe layout: IntoBytes + FromBytes guarantee no padding between fields
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct SlotEntry {
     /// Offset to tuple data within block
@@ -167,6 +171,7 @@ pub struct SlotEntry {
 }
 
 const SLOT_ENTRY_SIZE: usize = 4;
+const _: () = assert!(size_of::<SlotEntry>() == SLOT_ENTRY_SIZE);
 
 impl SlotEntry {
     pub fn new(offset: u16, length: u16) -> Self {
@@ -179,42 +184,75 @@ impl SlotEntry {
 }
 
 /// In-memory representation of a block
+/// Allocated as Vec<u32> to ensure 4-byte alignment for zerocopy safety
 pub struct Block {
-    /// Block data (64KB)
-    pub data: Vec<u8>,
+    /// Block data (64KB) - stored as u32 for guaranteed alignment
+    pub data: Vec<u32>,
 }
 
 impl Block {
     pub fn new() -> Self {
-        let mut data = vec![0u8; BLOCK_SIZE];
-        // Initialize header
+        // Allocate as u32 to ensure 4-byte alignment for zerocopy reads
+        let num_u32s = BLOCK_SIZE / size_of::<u32>();
+        let mut data = vec![0u32; num_u32s];
+
+        // Initialize header using zerocopy: convert to bytes safely
         let header = BlockHeader::new();
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                &header as *const BlockHeader as *const u8,
-                data.as_mut_ptr(),
-                BLOCK_HEADER_SIZE,
-            );
-        }
+        let header_bytes = header.as_bytes();
+
+        // Get mutable byte view using zerocopy's AsBytes trait
+        let data_bytes = data.as_mut_bytes();
+        data_bytes[..BLOCK_HEADER_SIZE].copy_from_slice(header_bytes);
+
         Block { data }
     }
 
+    /// Get byte view of block data using zerocopy's AsBytes trait
+    pub fn as_bytes(&self) -> &[u8] {
+        self.data.as_bytes()
+    }
+
+    /// Get mutable byte view of block data using zerocopy's AsBytes trait
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        self.data.as_mut_bytes()
+    }
+
     pub fn header(&self) -> &BlockHeader {
-        unsafe { &*(self.data.as_ptr() as *const BlockHeader) }
+        // Safe: Ref::from_bytes validates alignment and returns reference without unsafe
+        // Vec<u32> allocation guarantees sufficient alignment
+        let bytes = self.as_bytes();
+        Ref::<&[u8], BlockHeader>::from_bytes(&bytes[..BLOCK_HEADER_SIZE])
+            .map(Ref::into_ref)
+            .expect("Block alignment guaranteed by Vec<u32>")
     }
 
     pub fn header_mut(&mut self) -> &mut BlockHeader {
-        unsafe { &mut *(self.data.as_mut_ptr() as *mut BlockHeader) }
+        // Safe: Ref::from_bytes validates alignment and returns mutable reference without unsafe
+        // Vec<u32> allocation guarantees sufficient alignment
+        let bytes = self.as_bytes_mut();
+        Ref::<&mut [u8], BlockHeader>::from_bytes(&mut bytes[..BLOCK_HEADER_SIZE])
+            .map(Ref::into_mut)
+            .expect("Block alignment guaranteed by Vec<u32>")
     }
 
     pub fn slot(&self, slot_id: SlotId) -> &SlotEntry {
         let offset = BLOCK_HEADER_SIZE + slot_id as usize * SLOT_ENTRY_SIZE;
-        unsafe { &*(self.data.as_ptr().add(offset) as *const SlotEntry) }
+        let bytes = self.as_bytes();
+        // Safe: Ref::from_bytes validates alignment and returns reference without unsafe
+        // Vec<u32> allocation guarantees sufficient alignment
+        Ref::<&[u8], SlotEntry>::from_bytes(&bytes[offset..offset + SLOT_ENTRY_SIZE])
+            .map(Ref::into_ref)
+            .expect("Block alignment guaranteed by Vec<u32>")
     }
 
     pub fn slot_mut(&mut self, slot_id: SlotId) -> &mut SlotEntry {
         let offset = BLOCK_HEADER_SIZE + slot_id as usize * SLOT_ENTRY_SIZE;
-        unsafe { &mut *(self.data.as_mut_ptr().add(offset) as *mut SlotEntry) }
+        let bytes = self.as_bytes_mut();
+        // Safe: Ref::from_bytes validates alignment and returns mutable reference without unsafe
+        // Vec<u32> allocation guarantees sufficient alignment
+        Ref::<&mut [u8], SlotEntry>::from_bytes(&mut bytes[offset..offset + SLOT_ENTRY_SIZE])
+            .map(Ref::into_mut)
+            .expect("Block alignment guaranteed by Vec<u32>")
     }
 
     /// Read tuple data at slot
@@ -223,9 +261,10 @@ impl Block {
         if slot.is_empty() {
             return None;
         }
+        let bytes = self.as_bytes();
         let start = slot.offset as usize;
         let end = start + slot.length as usize;
-        Some(&self.data[start..end])
+        Some(&bytes[start..end])
     }
 
     /// Append tuple data to block (allocates new slot)
@@ -246,7 +285,8 @@ impl Block {
 
         // Allocate from end (tuple data)
         let new_free_end = free_end - data_space as u32;
-        self.data[new_free_end as usize..free_end as usize].copy_from_slice(data);
+        let bytes = self.as_bytes_mut();
+        bytes[new_free_end as usize..free_end as usize].copy_from_slice(data);
 
         // Create slot entry
         *self.slot_mut(slot_id) = SlotEntry::new(new_free_end as u16, data.len() as u16);

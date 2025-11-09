@@ -32,8 +32,8 @@ impl WalEntryType {
 }
 
 /// WAL entry header (48 bytes)
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Encode, Decode)]
+#[repr(C)]
 pub struct WalEntryHeader {
     /// Magic number for validation
     pub magic: u32,
