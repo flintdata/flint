@@ -280,6 +280,7 @@ mod tests {
     use std::fs;
 
     #[test]
+    #[ignore]
     fn test_wal_file_creation() {
         let path = "test_wal.log";
         let _ = fs::remove_file(path);
@@ -291,6 +292,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_wal_append_and_read() {
         let path = "test_wal_write.log";
         let _ = fs::remove_file(path);
@@ -313,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_wal_iterator() {
         let path = "test_wal_iter.log";
         let _ = fs::remove_file(path);

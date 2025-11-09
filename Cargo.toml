@@ -43,6 +43,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 bincode = "2.0"
 inventory = { version = "0.3", optional = true }
 
+[dev-dependencies]
+serial_test = "3.0"
+
 [features]
 default = ["extensions"]
 extensions = ["inventory"]  # Core extension system with auto-discovery via inventory crate
+

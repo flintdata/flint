@@ -84,6 +84,7 @@ impl MetadataManager {
 /// Index metadata - wraps the actual index instance
 pub struct IndexMetadata {
     pub name: String,
+    pub column: String,
     pub index_type: String,
     /// The actual index instance (manages its own root page ID)
     /// TODO replace Mutex with lockless pattern
@@ -220,8 +221,16 @@ impl Database {
 
                         self.index_files.insert(table_meta.name.clone(), Arc::new(index_file));
 
+                        // Get primary key column from schema
+                        let pk_column = table_meta.schema.columns.iter()
+                            .find(|col| col.is_primary_key)
+                            .or_else(|| table_meta.schema.columns.first())
+                            .map(|col| col.name.clone())
+                            .unwrap_or_else(|| "".to_string());
+
                         Some(IndexMetadata {
                             name: index_meta.name.clone(),
+                            column: pk_column,
                             index_type: index_meta.index_type.clone(),
                             index: Arc::new(Mutex::new(index)),
                         })
@@ -330,6 +339,7 @@ impl Database {
 
         let primary_index = Some(IndexMetadata {
             name: "pk".to_string(),
+            column: "".to_string(), // Primary key column determined by schema
             index_type: "btree".to_string(),
             index: Arc::new(Mutex::new(index)),
         });
@@ -558,6 +568,43 @@ impl Database {
             .map_err(|e| format!("Failed to range scan primary index: {}", e))
     }
 
+    /// Find a secondary index by table name and column name
+    /// Returns (index_name, IndexMetadata) if found
+    pub fn find_secondary_index(&self, table_name: &str, column_name: &str) -> Result<Option<(String, Arc<Mutex<Box<dyn index::Index>>>)>> {
+        let metadata_arc = self.get_table(table_name)?;
+        let metadata = metadata_arc.read();
+
+        // Search secondary indexes for matching column
+        for idx_meta in &metadata.secondary_indexes {
+            if idx_meta.column == column_name {
+                return Ok(Some((idx_meta.name.clone(), idx_meta.index.clone())));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Search a secondary index by table and column name
+    /// Returns Some(TuplePointer) if found, None if not found
+    pub fn search_secondary_index(&self, table_name: &str, column_name: &str, key: u64) -> Result<Option<TuplePointer>> {
+        // Find the secondary index
+        let index_opt = self.find_secondary_index(table_name, column_name)?;
+
+        if let Some((index_name, index_arc)) = index_opt {
+            // Get the index file using the table and index name
+            let index_file_key = format!("{}_{}", table_name, index_name);
+            let index_file = self.index_files.get(&index_file_key)
+                .ok_or_else(|| format!("Index file not found for secondary index {}", index_name))?;
+
+            // Search the index
+            let mut index = index_arc.lock();
+            index.search(key, index_file)
+                .map_err(|e| format!("Index search error: {}", e))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Create a secondary index on a table
     pub fn create_secondary_index(&mut self, index_name: String, table_name: String, column_name: String, index_type: String) -> Result<()> {
         // Get the table metadata
@@ -579,6 +626,7 @@ impl Database {
         // Create index metadata
         let index_meta = IndexMetadata {
             name: index_name.clone(),
+            column: column_name.clone(),
             index_type: index_type.clone(),
             index: Arc::new(Mutex::new(index)),
         };

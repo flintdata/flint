@@ -152,3 +152,5 @@ calculation.
 - [ ] MVCC for indexes (once UPDATE and DELETE are implemented)
 - [ ] Support splitting files into multi-file chunks for user fs backup convenience
 - [ ] Reverse index scans
+- [ ] Store table column names in a hashmap (for in-memory) once reaches capacity of a vec
+- [ ] Only accepts table-level PRIMARY KEY (id) syntax, not inline id INT PRIMARY KEY

@@ -174,8 +174,8 @@ impl Executor {
                 debug!("executing constant scan");
                 Ok(vec![Row::new(vec![Value::Int(1)])])
             }
-            Operator::IndexScan { table, column: _, value } => {
-                debug!(table = %table, "executing index scan");
+            Operator::IndexScan { table, column, value } => {
+                debug!(table = %table, column = %column, "executing index scan");
                 let db = self.db.read();
 
                 // Evaluate the value expression
@@ -198,10 +198,18 @@ impl Executor {
                     _ => return Err(ExecutorError::Execution("Cannot use NULL/Bool as index key".to_string())),
                 };
 
-                // Perform index lookup
-                match db.get_by_key(&table, key) {
-                    Ok(Some(tuple_ptr)) => {
-                        // Found by index - now fetch the actual row using the pointer
+                // Try to find a secondary index for this column, fall back to primary
+                let result = db.search_secondary_index(&table, &column, key)
+                    .or_else(|_| {
+                        // If secondary index search fails, try primary index
+                        debug!(column = %column, "secondary index not found or search failed, falling back to primary");
+                        db.get_by_key(&table, key)
+                    })
+                    .map_err(|e| ExecutorError::Execution(e))?;
+
+                // Fetch the row using the pointer if found
+                match result {
+                    Some(tuple_ptr) => {
                         let seg_id = tuple_ptr.segment_id;
                         let block_id = tuple_ptr.block_id;
                         let slot_id = tuple_ptr.slot_id;
@@ -218,12 +226,10 @@ impl Executor {
                             Ok(Vec::new())
                         }
                     }
-                    Ok(None) => {
-                        // Not found in index
-                        debug!("key not found in index");
+                    None => {
+                        debug!("key not found in any index");
                         Ok(Vec::new())
                     }
-                    Err(e) => Err(ExecutorError::Execution(e)),
                 }
             }
             Operator::TableScan { table } => {
