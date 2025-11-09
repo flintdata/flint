@@ -11,6 +11,11 @@ categories = ["database"]
 readme = "README.md"
 exclude = [".gitignore"]
 
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
 [workspace]
 # All workspace members (core flintdb + extensions)
 # To add a new extension: add "contrib/<name>" to members list
