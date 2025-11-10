@@ -9,14 +9,14 @@
   <b>A lighter SQL database</b><br/>
 </p>
 
-<!-- future use
 <h3 align="center">
   <a href="https://flintdatalabs.com">Website</a> &bull;
   <a href="https://docs.flintdatalabs.com">Docs</a> &bull;
   <a href="https://blog.flintdatalabs.com">Blog</a> &bull;
-  <a href="https://docs.paradedb.com/changelog/">Changelog</a>
+  <a href="https://github.com/flintdata/flint/blob/main/docs/changelog/CHANGELOG.md">Changelog</a>
 </h3>
--->
+
+---
 
 ## Use case
 
