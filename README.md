@@ -4,8 +4,10 @@
 <br>
 </h1>
 
-<h3 align="center"><br/>Flint<br/><br/></h3>
+<br/>
+<h3 align="center">Flint</h3>
 <p align="center">
+  <b>(In Development)</b><br/>
   <b>A lighter SQL database</b><br/>
 </p>
 
