@@ -1,6 +1,7 @@
 <!-- flint: A lighter SQL database -->
+
 <h1 align="center">
-  <a alt="flintdata" href="https://github.com/flintdata"><img width="256" height="256" alt="flintdata-logo-complex" src="docs/logo/flint-logo-complex.png"/></a>
+  <a alt="flintdata" href="https://github.com/flintdata"><img alt="flintdata-logo-complex" src="docs/logo/header.png"/></a>
 <br>
 </h1>
 
