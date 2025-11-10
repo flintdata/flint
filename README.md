@@ -1,6 +1,22 @@
-# flint
+<!-- flint: A lighter SQL database -->
+<h1 align="center">
+  <a alt="flintdata" href="https://github.com/flintdata"><img width="256" height="256" alt="flintdata-logo-complex" src="docs/logo/flint-logo-complex.png"/></a>
+<br>
+</h1>
 
-A *lighter* SQL database
+<p align="center">
+  <b>Flint<b><br/><br/>
+  <b>A lighter SQL database</b><br/>
+</p>
+
+<!-- future use
+<h3 align="center">
+  <a href="https://flintdatalabs.com">Website</a> &bull;
+  <a href="https://docs.flintdatalabs.com">Docs</a> &bull;
+  <a href="https://blog.flintdatalabs.com">Blog</a> &bull;
+  <a href="https://docs.paradedb.com/changelog/">Changelog</a>
+</h3>
+-->
 
 ## Use case
 
