@@ -242,3 +242,99 @@ No special plugins or loaders needed. They're just Rust crates.
 4. **Time series**: Specialized aggregations and compression
 
 All follow the same pattern - implement the traits, submit with inventory, ship as crates.
+
+## Dual Licensing Strategy (Advanced)
+
+For commercial or reusable extensions, you can separate generic logic from Flint integration using dual licensing:
+
+### Architecture
+```
+flint-<name>/          # MIT+Apache or Proprietary (standalone library)
+  Cargo.toml           # No flintdb dependency
+  src/lib.rs           # Generic implementation
+  
+<name>-ext/            # AGPL (Flint glue layer)
+  Cargo.toml           # Depends on flintdb + flint-<name>
+  src/lib.rs           # Trait implementations only
+```
+
+### Example: RBAC Extension
+
+**Standalone engine (MIT+Apache or Proprietary):**
+```toml
+# flint-rbac/Cargo.toml
+[package]
+name = "flint-rbac"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# No flintdb! Proves independence
+```
+```rust
+// flint-rbac/src/lib.rs
+//! Generic RBAC policy engine - usable in any project
+
+pub struct PolicyEngine { /* ... */ }
+
+impl PolicyEngine {
+    pub fn evaluate(&self, subject: &str, resource: &str, action: &str) -> Decision {
+        // Pure logic, no Flint dependencies
+    }
+}
+```
+
+**Flint integration (AGPL):**
+```toml
+# rbac-ext/Cargo.toml
+[package]
+name = "rbac-ext"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+flintdb = { path = "../..", features = ["extensions"] }
+flint-rbac = { path = "../flint-rbac" }  # Import MIT library
+```
+```rust
+// rbac-ext/src/lib.rs
+//! Flint RBAC integration (thin glue layer)
+
+use flint_rbac::PolicyEngine;
+use flintdb::extensions::*;
+
+struct RBACExtension {
+    engine: PolicyEngine,  // Delegates to MIT code
+}
+
+impl ExtensionLoader for RBACExtension {
+    fn load_functions(&self, registry: &mut FunctionRegistry) {
+        // Minimal glue - just adapts MIT types to Flint traits
+    }
+}
+```
+
+### Why This Matters
+
+**Legal separation:**
+- MIT library proves independence (no derivative work claim)
+- AGPL applies only to Flint integration glue
+- Publish MIT library to crates.io to demonstrate standalone utility
+- Proprietary code may be used in core extension if a public AGPL-3.0 repository is made public containing glue code
+
+**Strategic benefits:**
+1. **Ecosystem growth:** Others use your MIT libraries in non-Flint projects
+2. **Transparency:** Companies building proprietary extensions must open source their glue layer (AGPL), revealing integration patterns while keeping business logic private
+3. **Portfolio:** Your reusable components gain adoption independently
+
+### When to Use
+
+Use dual licensing when:
+- Core logic is reusable beyond Flint (policy engines, compression algorithms, data structures)
+- You want to maximize ecosystem adoption
+- You're building commercial extensions and want clean license boundaries
+
+Don't use for:
+- Simple extensions tightly coupled to Flint internals
+- Prototypes or examples (like point-ext)
+- Features with no standalone value
+
+The `point-ext` example uses pure AGPL for simplicity. Real commercial extensions should follow the dual-license pattern above.
