@@ -4,8 +4,8 @@
 <br>
 </h1>
 
+<h3 align="center"><br/>Flint<br/><br/></h3>
 <p align="center">
-  <b>Flint<b><br/><br/>
   <b>A lighter SQL database</b><br/>
 </p>
 
