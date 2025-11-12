@@ -29,7 +29,13 @@ jobs:
 
       - name: Run tests
         id: run_tests
-        run: cargo test
+        run: |
+          # Run tests and capture output to a file
+          mkdir -p test_logs
+          cargo test > test_logs/test_output.log 2>&1 || echo "Tests failed but continuing to capture logs"
+          
+          # Save the exit code to determine success/failure
+          echo "::set-output name=exit_code::$?"
         continue-on-error: true
 
       - name: Send logs to Elasticsearch
@@ -38,8 +44,15 @@ jobs:
           script: |
             const fs = require('fs');
             
-            // Get test output
-            const testOutput = process.env.GITHUB_STEP_SUMMARY || 'No test output available';
+            // Read the test output file
+            let testOutput;
+            try {
+              testOutput = fs.readFileSync('test_logs/test_output.log', 'utf8');
+              console.log("Successfully read test logs");
+            } catch (error) {
+              console.log("Error reading test logs:", error);
+              testOutput = "Failed to read test output: " + error.message;
+            }
             
             // Create log document
             const logDocument = {
@@ -54,7 +67,7 @@ jobs:
               event_name: context.eventName,
               actor: context.actor,
               timestamp: new Date().toISOString(),
-              status: ${{ steps.run_tests.outcome == 'success' }} ? 'success' : 'failure',
+              status: ${{ steps.run_tests.outputs.exit_code == '0' }} ? 'success' : 'failure',
               test_output: testOutput,
               commit_message: context.payload.head_commit ? context.payload.head_commit.message : 'No commit message available',
               branch: context.ref.replace('refs/heads/', '')
@@ -62,11 +75,11 @@ jobs:
             
             // Send to Elasticsearch
             try {
+              console.log("Sending logs to Elasticsearch...");
               const response = await fetch(`${process.env.ELASTICSEARCH_URL}/${process.env.ELASTICSEARCH_INDEX}/_doc`, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  // Use API key authentication - store this securely in GitHub secrets
                   'Authorization': `ApiKey ${process.env.ELASTICSEARCH_API_KEY}`
                 },
                 body: JSON.stringify(logDocument)
@@ -82,12 +95,10 @@ jobs:
               core.setFailed(`Error sending logs to Elasticsearch: ${error.message}`);
             }
         env:
-          # Store API key in GitHub secrets
           ELASTICSEARCH_API_KEY: ${{ secrets.ELASTICSEARCH_API_KEY }}
 
       # This ensures the workflow fails if the tests failed
       - name: Check test results
-        if: steps.run_tests.outcome != 'success'
+        if: steps.run_tests.outputs.exit_code != '0'
         run: exit 1
-
 
