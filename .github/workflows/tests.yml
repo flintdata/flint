@@ -44,7 +44,7 @@ jobs:
         run: |
           # Run tests with JSON output only
           # The --format=json flag must be passed after -- to be sent to the test binary
-          CARGO_TERM_COLOR=never cargo test -- --format=json > logs/test_output.json 2>&1
+          CARGO_TERM_COLOR=never RUSTFLAGS=-Awarnings cargo test > logs/test_output.json 2>&1
           
           # Save the exit code
           echo "exit_code=$?" >> $GITHUB_OUTPUT
