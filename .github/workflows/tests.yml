@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    runs-on: [self-hosted, flint]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
