@@ -30,13 +30,3 @@ jobs:
 
       - name: Run tests
         run: cargo test
-
-      - name: Send Logs to Loki
-        if: failure()
-        uses: metrico/loki-action@V3.1
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          endpoint: ${{ secrets.LOKI_ENDPOINT }}
-          username: ${{ secrets.LOKI_USER }}
-          password: ${{ secrets.LOKI_PASS }}
-          job-names: build
