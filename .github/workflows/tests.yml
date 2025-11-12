@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  ELASTICSEARCH_URL: "https://your-elasticsearch-endpoint:9200"
+  ELASTICSEARCH_URL: ${{ secrets.ELASTICSEARCH_ENDPOINT }}
   ELASTICSEARCH_INDEX: "flint-workflow-logs"
 
 jobs:
