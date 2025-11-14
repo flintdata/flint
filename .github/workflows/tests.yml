@@ -78,7 +78,7 @@ jobs:
             
             // Determine overall status
             const compileSuccess = ${{ steps.compile.outputs.exit_code == '0' }};
-            const testSuccess = ${{ steps.run_tests.outputs.exit_code == '0' }};
+            const testSuccess = ${{ steps.test.outputs.exit_code == '0' }};
             const overallStatus = compileSuccess && testSuccess ? 'success' : 'failure';
             const failureReason = !compileSuccess ? 'compilation_failure' : 
                                  !testSuccess ? 'test_failure' : null;
@@ -132,7 +132,7 @@ jobs:
 
       # This ensures the workflow fails if either compilation or tests failed
       - name: Check results
-        if: steps.compile.outputs.exit_code != '0' || steps.run_tests.outputs.exit_code != '0'
+        if: steps.compile.outputs.exit_code != '0' || steps.test.outputs.exit_code != '0'
         run: |
           if [ "${{ steps.compile.outputs.exit_code }}" != "0" ]; then
             echo "Compilation failed"
