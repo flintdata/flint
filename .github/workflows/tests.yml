@@ -132,12 +132,16 @@ jobs:
 
       # This ensures the workflow fails if either compilation or tests failed
       - name: Check results
-        if: steps.compile.outputs.exit_code != '0' || steps.test.outputs.exit_code != '0'
         run: |
-          if [ "${{ steps.compile.outputs.exit_code }}" != "0" ]; then
-            echo "Compilation failed"
+          COMPILE_EXIT="${{ steps.compile.outputs.exit_code }}"
+          TEST_EXIT="${{ steps.test.outputs.exit_code }}"
+
+          if [ -z "$COMPILE_EXIT" ] || [ "$COMPILE_EXIT" != "0" ]; then
+            echo "Compilation failed with exit code: $COMPILE_EXIT"
             exit 1
-          else
-            echo "Tests failed"
+          fi
+
+          if [ -z "$TEST_EXIT" ] || [ "$TEST_EXIT" != "0" ]; then
+            echo "Tests failed with exit code: $TEST_EXIT"
             exit 1
           fi
